@@ -1,3 +1,39 @@
+# VIctory-BigCheese (amd branch)
+
+This branch is **[eikkapine/victory-amd](https://github.com/eikkapine/victory-amd)**
+with VIctory-BigCheese's changes on top, tuned for a PC with **16 GB of RAM**.
+The releases from v2.0 on are built from it. The `main` branch is the older
+cool_fox-based VIctory-BigCheese (releases v1.x).
+
+**[Download the latest build](https://github.com/computermakemegta6/VIctory-BigCheese/releases/latest)**
+(`VIctory-BigCheese-win64.zip`), extract the whole zip and double-click
+`Play-16GB-RAM.cmd`; the first start asks for your game folder. The zip has
+`victory.exe`, the launcher, AMD's FidelityFX DLLs (`fsr\`) and
+[bigcheese/README.txt](bigcheese/README.txt), which also has the steps for AI
+agents setting it up for a user. The launcher's source is
+[bigcheese/Play-16GB-RAM.cmd](bigcheese/Play-16GB-RAM.cmd).
+
+What this branch changes from victory-amd (2026-11-28):
+
+- **16 GB of RAM:** Series S and victory-amd's memory settings for 16 GB.
+- **Card window line at 90 %** (`VICTORY_WINDOW_CARD_PERCENT`, 50-95; the fork
+  had 80 % fixed): buffers the CPU fills stay in the card's memory instead of
+  spilling into PC RAM. In the open world that held 17 real fps instead of about
+  10. Mapped buffers are let go of more slowly while the card has room.
+- **Crash fix:** one shader (f16876929fa64f9f, leaving the prison) crashes AMD's
+  shader compiler; `VICTORY_SKIP_PIPELINES` skips it in release builds too, and
+  when pipelines are made early from `early-pipelines.txt`.
+- **Keyboard steering** ramps over 0.25 s instead of jumping to full lock
+  (`VICTORY_KEY_STEER_MS`, 0 = as before).
+- **The launcher:** menus at up to 60 fps (`VICTORY_FRAME_INTERVAL_MS=16.667`,
+  `VICTORY_FPS_CAP=60`) with gameplay never held back on a 16 GB PC, FSR 4 with
+  FSR 4 frame generation (`VICTORY_FIDELITYFX_FRAMEGEN=4`), easy setup.
+
+Tested on an RX 9060 XT (16 GB), Ryzen 7 7800X3D, 16 GB of RAM. victory-amd's
+own README follows, as it came.
+
+---
+
 # VIctory AMD
 
 An AMD Radeon-tuned fork of [VIctory](https://github.com/Marvisak/VIctory), a
