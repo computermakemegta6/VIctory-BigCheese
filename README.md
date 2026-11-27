@@ -25,7 +25,8 @@ What this branch changes from victory-amd (2026-11-28):
 - **Crash fix:** one shader (f16876929fa64f9f, leaving the prison) crashes AMD's
   shader compiler; `VICTORY_SKIP_PIPELINES` skips it in release builds too, and
   when pipelines are made early from `early-pipelines.txt`.
-- **Keyboard steering** ramps over 0.25 s instead of jumping to full lock
+- **Keyboard steering** eases to full lock over 0.1 s instead of jumping there,
+  and is back in the middle at once when A/D are let go
   (`VICTORY_KEY_STEER_MS`, 0 = as before).
 - **The launcher:** menus at up to 60 fps (`VICTORY_FRAME_INTERVAL_MS=16.667`,
   `VICTORY_FPS_CAP=60`) with gameplay never held back on a 16 GB PC, FSR 4 with

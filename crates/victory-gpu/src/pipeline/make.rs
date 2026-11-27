@@ -43,6 +43,38 @@ pub(crate) struct Pending {
     used: AtomicBool,
     /// A pass over the screen ([`GraphicsState::screen_pass`]).
     screen: bool,
+    /// Why it is never made ([`left_out`]), if it is not.
+    left_out: Option<&'static str>,
+}
+
+/// Whether one of `shaders` is a compute shader whose container holds `name`.
+fn named(shaders: &[Arc<Shader>], name: &[u8]) -> bool {
+    shaders
+        .iter()
+        .any(|s| s.stage == "compute" && s.container.windows(name.len()).any(|w| w == name))
+}
+
+/// (VIctory-BigCheese, from RyanLockwoood/VIctory-cool_fox-LockWood) Ray
+/// work never made while the title's structure builder is off
+/// (`VICTORY_BVH_BUILDER`), when asked for: `VICTORY_RT_RESOLVE=0` leaves out
+/// the some thousand `CS_RaytracingResolve` programs (they shade hits, and
+/// with no structures every ray misses; they fill the compiler's queue on a
+/// cold cache), `VICTORY_ACTIVATE_RAYS=0` the screen probes' ray activation
+/// (no rays sent out at all). Unset, everything is made as before.
+fn left_out(shaders: &[Arc<Shader>]) -> Option<&'static str> {
+    static SKIP: OnceLock<[bool; 2]> = OnceLock::new();
+    let [resolve, activate] = *SKIP.get_or_init(|| {
+        let builder = std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "1");
+        let off = |name: &str| !builder && std::env::var_os(name).is_some_and(|v| v == "0");
+        [off("VICTORY_RT_RESOLVE"), off("VICTORY_ACTIVATE_RAYS")]
+    });
+    if resolve && named(shaders, b"CS_RaytracingResolve") {
+        return Some("rt_resolve_left_out: shades ray-tracing hits, none without the builder (VICTORY_RT_RESOLVE=0)");
+    }
+    if activate && named(shaders, b"CS_ScreenProbes_ActivateRays") {
+        return Some("activate_rays_left_out: sends out rays, which all miss without the builder (VICTORY_ACTIVATE_RAYS=0)");
+    }
+    None
 }
 
 // SAFETY: D3D12 objects are free-threaded; the graphics state (whose input
@@ -59,7 +91,9 @@ impl Pending {
             key.update(s.hash.as_bytes());
         }
         key.update(graphics.as_ref().map(|g| g.describe()).unwrap_or_default().as_bytes());
+        let left_out = left_out(&shaders);
         Pending {
+            left_out,
             screen: graphics.as_ref().is_some_and(|g| g.screen_pass()),
             shaders,
             graphics,
@@ -76,6 +110,9 @@ impl Pending {
     }
 
     fn make(&self) {
+        if self.left_out.is_some() {
+            return;
+        }
         // Not through `OnceLock::get_or_init`: a worker the driver's compiler
         // crashed under stays inside the call for good (see [`guard_start`]),
         // and anyone else asking would wait for it forever.
@@ -323,6 +360,9 @@ fn lost(slot: usize) {
 /// Why a pipeline has no host pipeline: its shaders that do not translate,
 /// else "compile_failed refused ..." or "still_building"; `None` if it has one.
 pub(crate) fn missing(p: &Pending) -> Option<String> {
+    if let Some(why) = p.left_out {
+        return Some(why.to_owned());
+    }
     match p.made.get() {
         Some(Some(_)) => None,
         None => Some(format!("still_building {}", hashes(p))),
@@ -390,6 +430,9 @@ pub(crate) fn waiting() -> u64 {
 /// The host pipeline if it is made (or is made within the frame's budget);
 /// queues it on first use.
 pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
+    if p.left_out.is_some() {
+        return None;
+    }
     // A still-pending pipeline was requested by the title too. Prewarm it
     // on the next launch, even if this run never got to use it.
     if !p.used.load(Ordering::Relaxed) && !p.used.swap(true, Ordering::Relaxed) {
@@ -420,6 +463,9 @@ fn compute_waits() -> bool {
 /// Makes `p` on this thread if it is not made yet (waiting for a worker
 /// that is making it); whether it has a host pipeline.
 pub(crate) fn now(p: &Arc<Pending>) -> bool {
+    if p.left_out.is_some() {
+        return false;
+    }
     p.make();
     p.made.get().is_some_and(|made| made.is_some())
 }
@@ -427,6 +473,9 @@ pub(crate) fn now(p: &Arc<Pending>) -> bool {
 /// At the title's creation of a pipeline: starts it at once if an earlier
 /// run drew with it (during loading, so the world's first frames find it).
 pub(crate) fn early(p: &Arc<Pending>) {
+    if p.left_out.is_some() {
+        return;
+    }
     if !p.shaders.is_empty() && super::library::wanted_early(&p.key) {
         super::library::EARLY.fetch_add(1, Ordering::Relaxed);
         start(p, EARLY);

@@ -296,18 +296,20 @@ fn pc_keyboard_with(keys: &[KeyState], driving: bool, extra_binds: &[(u8, Bind)]
 
 /// (VIctory-BigCheese) The milliseconds the keyboard's left stick takes from
 /// the middle to one side while a key pushes it sideways
-/// (`VICTORY_KEY_STEER_MS`, 250 unless set; 0: at once, as before). Keys push
+/// (`VICTORY_KEY_STEER_MS`, 100 unless set; 0: at once, as before). Keys push
 /// a stick all the way over at once: a car steered with A and D went to full
-/// lock with every tap, and a tap held over a slow frame was a swerve. Back
-/// to the middle it goes twice as fast. Only the keyboard's sideways axis: a
-/// real pad's stick is the player's own.
+/// lock with every tap, and a tap held over a slow frame was a swerve. Let
+/// go, or turned the other way, it is back in the middle at once: easing it
+/// back too (250 ms out, 125 back, as it first was) left boats turning on
+/// after A or D was let go, on top of the title's own smoothing. Only the
+/// keyboard's sideways axis: a real pad's stick is the player's own.
 fn key_steer_ms() -> u64 {
     // (The hub's tests read whole pushes; `Steer`'s own test eases.)
     if cfg!(test) {
         return 0;
     }
     static MS: LazyLock<u64> = LazyLock::new(|| {
-        std::env::var("VICTORY_KEY_STEER_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(250)
+        std::env::var("VICTORY_KEY_STEER_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(100)
     });
     *MS
 }
@@ -328,15 +330,16 @@ impl Steer {
         let target = pad.left_x;
         let elapsed = now.saturating_sub(self.at).min(100_000);
         self.at = now;
-        if ramp_ms == 0 {
+        // No ramp, or let go: where the keys put it, at once.
+        if ramp_ms == 0 || target == 0.0 {
             self.x = target;
             return pad;
         }
-        let mut step = elapsed as f32 / (ramp_ms as f32 * 1000.0);
-        // Letting go, or turning the other way: back through the middle faster.
-        if target.abs() < self.x.abs() || target * self.x < 0.0 {
-            step *= 2.0;
+        // Turned the other way: from the middle, not from the other side.
+        if target * self.x < 0.0 {
+            self.x = 0.0;
         }
+        let step = elapsed as f32 / (ramp_ms as f32 * 1000.0);
         let gap = target - self.x;
         self.x = if gap.abs() <= step { target } else { self.x + step * gap.signum() };
         PadState { left_x: self.x, ..pad }
@@ -433,8 +436,15 @@ impl Device {
             id,
             root_id: id,
             supported_input: kind(index),
-            // Low and high frequency.
-            rumble_motors: if index <= FALLBACK { 0x3 } else { 0 },
+            // Low and high frequency; with `VICTORY_RUMBLE_LOG`, the two
+            // trigger motors too, so the title has them to drive.
+            rumble_motors: if index > FALLBACK {
+                0
+            } else if rumble_log::on() {
+                0xF
+            } else {
+                0x3
+            },
             ..Default::default()
         };
         Device {
@@ -695,6 +705,7 @@ impl State {
         desktop: PadState,
     ) -> Vec<Event> {
         let now = now();
+        rumble_log::keys(&keys);
         let mut events = std::mem::take(&mut self.pending);
         // The keyboard's sideways push eased (`VICTORY_KEY_STEER_MS`), before
         // it meets any host pad.
@@ -863,6 +874,9 @@ extern "system" fn current_reading(
             Some(i) => newest(i),
         }
     };
+    if let Some(r) = found {
+        rumble_log::game_read(&r.value);
+    }
     tracing::trace!(
         kind = format_args!("{kind:#x}"),
         device = ?hub.index(device),
@@ -1159,6 +1173,112 @@ extern "system" fn device_status(this: *const Device) -> u32 {
         0
     }
 }
+/// (VIctory-BigCheese, a test) What the title asks of the pad's four motors
+/// (low, high, left trigger, right trigger), written to the file
+/// `VICTORY_RUMBLE_LOG` names whenever a level changes, with the seconds
+/// since the first line, beside the keyboard layout switches and mouse
+/// buttons: whether the trigger motors run only in a vehicle, which would
+/// let the W/S layout follow the title instead of F. Off without the
+/// variable (the pad then lists two motors, as before).
+mod rumble_log {
+    use std::io::Write;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::Instant;
+
+    struct Log {
+        file: std::fs::File,
+        began: Instant,
+        last: [u8; 4],
+    }
+
+    static LOG: LazyLock<Option<Mutex<Log>>> = LazyLock::new(|| {
+        let path = std::env::var_os("VICTORY_RUMBLE_LOG").filter(|p| !p.is_empty())?;
+        let file = std::fs::File::create(&path).ok()?;
+        Some(Mutex::new(Log { file, began: Instant::now(), last: [0; 4] }))
+    });
+
+    pub(super) fn on() -> bool {
+        LOG.is_some()
+    }
+
+    /// A line: the seconds since the log began, then `what`.
+    pub(super) fn note(what: std::fmt::Arguments<'_>) {
+        let Some(log) = LOG.as_ref() else {
+            return;
+        };
+        let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
+        let at = log.began.elapsed().as_secs_f64();
+        let _ = writeln!(log.file, "{at:9.2}  {what}");
+    }
+
+    /// The movement keys (W A S D, Shift, Space) as the poll thread reads
+    /// them, when they change: when a key really went down or up.
+    pub(super) fn keys(keys: &[super::KeyState]) {
+        use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
+        static LAST: AtomicU8 = AtomicU8::new(0);
+        if !on() {
+            return;
+        }
+        const WATCHED: [(u8, &str); 6] = [(b'W', "W"), (b'A', "A"), (b'S', "S"), (b'D', "D"), (0xA0, "Shift"), (0x20, "Space")];
+        let mask = WATCHED
+            .iter()
+            .enumerate()
+            .filter(|(_, (vk, _))| keys.iter().any(|k| k.virtual_key == *vk))
+            .fold(0u8, |m, (i, _)| m | 1 << i);
+        if LAST.swap(mask, Relaxed) != mask {
+            let held: Vec<&str> = WATCHED.iter().enumerate().filter(|(i, _)| mask & 1 << i != 0).map(|(_, (_, n))| *n).collect();
+            note(format_args!("keys    {}", if held.is_empty() { "-".to_owned() } else { held.join(" ") }));
+        }
+    }
+
+    /// A pad reading the title just took: the left stick it sees, when that
+    /// changed, and any stretch of over 150 ms it took none (a stall: what
+    /// it last read stays held meanwhile).
+    pub(super) fn game_read(value: &super::Value) {
+        static LAST: Mutex<(Option<Instant>, [i8; 2])> = Mutex::new((None, [0; 2]));
+        if !on() {
+            return;
+        }
+        let super::Value::Pad(pad) = value else {
+            return;
+        };
+        let now = Instant::now();
+        let stick = [(pad.left_x * 10.0).round() as i8, (pad.left_y * 10.0).round() as i8];
+        let (gap, changed) = {
+            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            let gap = last.0.map(|t| now.duration_since(t).as_millis());
+            let changed = last.1 != stick;
+            *last = (Some(now), stick);
+            (gap, changed)
+        };
+        if let Some(gap) = gap.filter(|&g| g > 150) {
+            note(format_args!("game    read no controls for {gap} ms"));
+        }
+        if changed {
+            note(format_args!("game    sees stick x {:+.1} y {:+.1}", f32::from(stick[0]) / 10.0, f32::from(stick[1]) / 10.0));
+        }
+    }
+
+    /// The four levels, in hundredths, when any of them changed.
+    pub(super) fn levels(device: usize, levels: [f32; 4]) {
+        let Some(log) = LOG.as_ref() else {
+            return;
+        };
+        let now = levels.map(|l| (l.clamp(0.0, 1.0) * 100.0).round() as u8);
+        {
+            let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
+            if log.last == now {
+                return;
+            }
+            log.last = now;
+        }
+        let [low, high, left, right] = now;
+        note(format_args!(
+            "rumble  low {low:3}  high {high:3}  left trigger {left:3}  right trigger {right:3}  (device {device})"
+        ));
+    }
+}
+
 // shortcut: trigger motors are dropped (XInput has none). The host API that
 // drives them without a redistributable is Windows.Gaming.Input (WinRT
 // `Gamepad.Vibration`), which needs WinRT bindings this crate lacks outside
@@ -1170,12 +1290,14 @@ extern "system" fn set_rumble(this: *const Device, params: *const [f32; 4]) {
     if device.index >= PADS && !(one_pad && device.index == FALLBACK) {
         return;
     }
-    let [low, high, ..] = if params.is_null() {
+    let levels = if params.is_null() {
         [0.0; 4]
     } else {
         // SAFETY: checked non-null; four motor levels.
         unsafe { *params }
     };
+    rumble_log::levels(device.index, levels);
+    let [low, high, ..] = levels;
     let speed = |level: f32| (level.clamp(0.0, 1.0) * f32::from(u16::MAX)) as u16;
     let mut source = lock(&device.hub().source);
     if one_pad {
@@ -1557,19 +1679,24 @@ mod tests {
     fn keys_steer_the_stand_in_gradually() {
         let right = PadState { left_x: 1.0, left_y: 1.0, ..Default::default() };
         let left = PadState { left_x: -1.0, ..Default::default() };
+        let none = PadState::default();
         let mut steer = Steer { x: 0.0, at: 1_000_000 };
         // A quarter of the way over after a quarter of the ramp; the other
         // axis as the keys put it.
-        let p = steer.smooth(right, 1_062_500, 250);
+        let p = steer.smooth(right, 1_025_000, 100);
         assert_eq!((p.left_x, p.left_y), (0.25, 1.0));
         // All the way over, and no further.
-        assert!(steer.smooth(right, 1_162_500, 250).left_x < 1.0);
-        assert_eq!(steer.smooth(right, 1_262_500, 250).left_x, 1.0);
-        assert_eq!(steer.smooth(right, 1_300_000, 250).left_x, 1.0);
-        // Turned the other way: back through the middle twice as fast.
-        assert_eq!(steer.smooth(left, 1_362_500, 250).left_x, 0.5);
+        assert!(steer.smooth(right, 1_075_000, 100).left_x < 1.0);
+        assert_eq!(steer.smooth(right, 1_100_000, 100).left_x, 1.0);
+        assert_eq!(steer.smooth(right, 1_150_000, 100).left_x, 1.0);
+        // Let go: back in the middle at once, not eased back.
+        assert_eq!(steer.smooth(none, 1_150_001, 100).left_x, 0.0);
+        // Over again, then the other way: from the middle at once, then eased.
+        assert_eq!(steer.smooth(right, 1_250_001, 100).left_x, 1.0);
+        assert_eq!(steer.smooth(left, 1_275_001, 100).left_x, -0.25);
         // A frame that took long moves it no more than a tenth of a second would.
-        assert_eq!(steer.smooth(left, 9_000_000, 250).left_x, -0.3);
+        let mut slow = Steer { x: 0.0, at: 1_000_000 };
+        assert_eq!(slow.smooth(left, 9_000_000, 250).left_x, -0.4);
         // No ramp: at once.
         assert_eq!(steer.smooth(right, 9_000_001, 0).left_x, 1.0);
     }

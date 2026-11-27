@@ -608,6 +608,92 @@ fn window_mapped_for(size: u64) -> Option<(ID3D12Resource, *mut u8)> {
     made
 }
 
+/// (VIctory-BigCheese, from cool_fox) Whether a window that went to the PC's
+/// memory (the card was past the windows' line, [`window_card_percent`])
+/// moves up to the card once there is room again (`VICTORY_WINDOW_PROMOTE=1`;
+/// off unless set). The next ask for it then gets a new window in card memory
+/// the CPU maps ([`window_mapped_for`]), which takes its place in the table
+/// of windows; the old copy goes, with its PC memory, once nothing holds it
+/// (only windows held by the table alone move). On a 16 GB PC the title's own
+/// pages were paged out to make room for such windows (hard faults at 86,000
+/// pages a second, cool_fox m1-base, 2026-11-27), and they stayed in the PC's
+/// memory for as long as they were read, which in the open world is as long
+/// as the area is near.
+fn window_promote() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_WINDOW_PROMOTE").is_some_and(|v| v == "1"))
+}
+
+/// The most bytes of windows moved up to the card ([`window_promote`]) a
+/// second: each is a new buffer to make resident and a window's bytes to copy
+/// again (`VICTORY_WINDOW_PROMOTE_MB`, 64 unless set: 16 windows of 4 MiB).
+fn window_promote_per_second() -> u64 {
+    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_WINDOW_PROMOTE_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(64) << 20
+    })
+}
+
+/// Room the card keeps under the windows' line before windows move up to it
+/// ([`window_promote`]), so that the moves do not themselves push the card
+/// over the line and leave the next new windows in the PC's memory.
+const PROMOTE_MARGIN: u64 = 512 << 20;
+
+/// Whether the card had room for windows to move up at the last look
+/// ([`let_go_idle`]): asks read this instead of the system's numbers, which
+/// are a driver call.
+static PROMOTE_ROOM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Of this second ([`window_promote_per_second`]): which second, and the bytes
+/// of windows moved up in it.
+static PROMOTE_SECOND: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// Since the start: windows moved up to the card and their bytes.
+static PROMOTED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// Notes whether the card has room for windows to move up ([`PROMOTE_ROOM`]),
+/// from the card's budget and use (`[budget, used, ..]`).
+fn note_promote_room(video: Option<[u64; 4]>) {
+    if !window_promote() {
+        return;
+    }
+    let most = window_mapped_most();
+    let room = most > 0
+        && WINDOW_MAPPED_BYTES.load(Ordering::Relaxed) + WINDOW <= most
+        && video.is_some_and(|[budget, used, ..]| used + PROMOTE_MARGIN < window_card_line(budget, window_card_percent()));
+    PROMOTE_ROOM.store(room, Ordering::Relaxed);
+}
+
+/// Whether `shadow` is to move up to the card now ([`window_promote`]): a
+/// window only in the PC's memory, room on the card, and this second's
+/// bytes not spent. Spends them when it is.
+fn promote_now(shadow: &Shadow) -> bool {
+    if !window_promote() || !PROMOTE_ROOM.load(Ordering::Relaxed) || !shadow.promotable() {
+        return false;
+    }
+    let second = crate::host::coarse_ms() / 1000;
+    if PROMOTE_SECOND[0].swap(second, Ordering::Relaxed) != second {
+        PROMOTE_SECOND[1].store(0, Ordering::Relaxed);
+    }
+    if PROMOTE_SECOND[1].fetch_add(shadow.len, Ordering::Relaxed) + shadow.len > window_promote_per_second() {
+        PROMOTE_SECOND[1].fetch_sub(shadow.len, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+/// Counts a window moved up to the card, and says so now and then.
+fn note_promoted(len: u64) {
+    let n = PROMOTED[0].fetch_add(1, Ordering::Relaxed) + 1;
+    let bytes = PROMOTED[1].fetch_add(len, Ordering::Relaxed) + len;
+    if n.is_power_of_two() || n % 1000 == 0 {
+        tracing::info!(
+            "windows moved up from the PC's memory to the card (VICTORY_WINDOW_PROMOTE): {n} so far, {} MB",
+            bytes >> 20
+        );
+    }
+}
+
 /// Whether windows outside buffers have two sides too, so that submissions
 /// in the air read the bytes they were prepared with (`VICTORY_WINDOWS_OWN=1`;
 /// off by default: it takes the windows' bytes again, 3.3 GB in capture
@@ -3314,7 +3400,9 @@ pub(crate) fn let_go_idle() {
         // second and 38 s of waiting a minute. Such windows stay a minute
         // while the card is under the windows' line, and go as the others
         // past it.
-        let mapped_idle_ms = match host().and_then(|h| h.video_memory()) {
+        let video = host().and_then(|h| h.video_memory());
+        note_promote_room(video);
+        let mapped_idle_ms = match video {
             Some([budget, used, ..]) if used < window_card_line(budget, window_card_percent()) => idle_ms.max(60_000),
             _ => idle_ms,
         };
@@ -3397,6 +3485,23 @@ impl Shadow {
     /// The host GPU address of a title address inside the buffer.
     pub(crate) fn gpu(&self, address: u64) -> u64 {
         self.gpu + (address - self.start)
+    }
+
+    /// A window outside buffers whose only copy is in the PC's memory: not in
+    /// card memory the CPU maps, no side on the card, not in place.
+    fn only_in_pc(&self) -> bool {
+        self.window && !self.mapped && self.card.is_none() && self.place.is_none()
+    }
+
+    /// Whether the window may move up to the card ([`window_promote`]): only
+    /// in the PC's memory, and its buffer held by the copy alone. A
+    /// descriptor slot keeps showing the buffer it was made with until the
+    /// title writes the slot again, and the heap pass brings up to date the
+    /// copy the table of windows names: a slot left on the old copy would
+    /// read bytes nothing refreshes any more. A list that recorded the old
+    /// copy keeps it until it is reset, and reads what it was given then.
+    fn promotable(&self) -> bool {
+        self.only_in_pc() && crate::host::references(&self.buffer) == 1
     }
 
     /// The title memory the copy is of: its start and length.
@@ -5862,6 +5967,19 @@ pub(crate) fn by_address(start: u64, len: u64) -> Option<Arc<Shadow>> {
 /// Copies of title memory outside buffers, by (start, length).
 static LOOSE: std::sync::RwLock<BTreeMap<(u64, u64), Arc<Shadow>>> = std::sync::RwLock::new(BTreeMap::new());
 
+/// A window of title memory `[start, start + len)` in card memory the CPU
+/// maps ([`window_mapped_for`]), if there is room for one.
+fn mapped_window(start: u64, len: u64) -> Option<Arc<Shadow>> {
+    let (buffer, data) = window_mapped_for(len)?;
+    crate::host::name(&buffer, || format!("title memory {start:#x}+{len:#x} mapped on the card"));
+    // SAFETY: a live buffer.
+    let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+    let mut shadow = Shadow::new(buffer, data, gpu, start, len);
+    shadow.window = true;
+    shadow.mapped = true;
+    Some(Arc::new(shadow))
+}
+
 fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Shadow>> {
     let (cell, _) = window_of(address, end, WINDOW);
     let named = window_of(address, end, if unsized_ask { WINDOW } else { window() });
@@ -5894,7 +6012,9 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         } else {
             Some(named)
         };
-        if let Some(shadow) = key.and_then(|key| map.get(&key)) {
+        if let Some(shadow) = key.and_then(|key| map.get(&key))
+            && !(window_promote() && PROMOTE_ROOM.load(Ordering::Relaxed) && shadow.promotable())
+        {
             note(shadow);
             return Some(shadow.clone());
         }
@@ -5913,6 +6033,16 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         named
     };
     if let Some(shadow) = map.get(&(start, len)) {
+        // Room on the card again: a new window there takes this one's place
+        // in the table (`window_promote`); this one goes when let go.
+        if promote_now(shadow)
+            && let Some(moved) = mapped_window(start, len)
+        {
+            note_promoted(len);
+            note(&moved);
+            map.insert((start, len), moved.clone());
+            return Some(moved);
+        }
         note(shadow);
         return Some(shadow.clone());
     }
@@ -5925,14 +6055,7 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
         return Some(shadow);
     }
     // One buffer in the card's memory, filled by the CPU through the bus.
-    if let Some((buffer, data)) = window_mapped_for(len) {
-        crate::host::name(&buffer, || format!("title memory {start:#x}+{len:#x} mapped on the card"));
-        // SAFETY: a live buffer.
-        let gpu = unsafe { buffer.GetGPUVirtualAddress() };
-        let mut shadow = Shadow::new(buffer, data, gpu, start, len);
-        shadow.window = true;
-        shadow.mapped = true;
-        let shadow = Arc::new(shadow);
+    if let Some(shadow) = mapped_window(start, len) {
         note(&shadow);
         map.insert((start, len), shadow.clone());
         return Some(shadow);

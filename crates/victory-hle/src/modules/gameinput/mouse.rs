@@ -4,7 +4,7 @@
 //! recaptures the mouse cursor. Switching windows releases the cursor cleanly.
 
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -114,6 +114,12 @@ struct Capture {
 static CAPTURE: LazyLock<Mutex<Capture>> = LazyLock::new(|| Mutex::new(Capture::default()));
 static DRIVING: AtomicBool = AtomicBool::new(false);
 static WANTED: AtomicBool = AtomicBool::new(true);
+/// The mouse buttons the rumble test's log last wrote down.
+static LOGGED_BUTTONS: AtomicU8 = AtomicU8::new(0);
+
+fn layout(driving: bool) -> &'static str {
+    if driving { "driving" } else { "on foot" }
+}
 static RAW: OnceLock<bool> = OnceLock::new();
 
 /// Whether `F` (enter / exit vehicle) also switches the W/S layout between
@@ -360,6 +366,7 @@ pub(in crate::modules) fn window_message(
             // if F was pressed with no vehicle near.
             let driving = !DRIVING.fetch_xor(true, Relaxed);
             tracing::info!(driving, "PC controls layout switched by F (enter/exit vehicle)");
+            super::rumble_log::note(format_args!("F pressed: keys now {}", layout(driving)));
             // SAFETY: the panel displays the selected layer on this window.
             unsafe {
                 if driving {
@@ -374,6 +381,7 @@ pub(in crate::modules) fn window_message(
                 let was_driving = DRIVING.fetch_xor(true, Relaxed);
                 let driving = !was_driving;
                 tracing::info!(driving, "PC controls layout switched");
+                super::rumble_log::note(format_args!("F5 pressed: keys now {}", layout(driving)));
                 // SAFETY: the panel displays the selected layer on this window.
                 unsafe {
                     if was_driving {
@@ -444,6 +452,15 @@ pub(super) fn read(keys: &[KeyState]) -> PadState {
         return keyboard;
     }
     let held = mouse_buttons();
+    // (The rumble test's log: the mouse buttons as they change, shots
+    // being a cause of trigger rumble too.)
+    if held != LOGGED_BUTTONS.swap(held, Relaxed) {
+        super::rumble_log::note(format_args!(
+            "mouse: left {}  right {}",
+            u8::from(held & 1 != 0),
+            u8::from(held & 2 != 0)
+        ));
+    }
     state.blocked &= held;
     let pressed = held & !state.blocked;
     let [right_x, right_y] = state.motion.stick(Instant::now(), sensitivity(), invert_y());

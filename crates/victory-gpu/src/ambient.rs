@@ -118,6 +118,20 @@ pub(crate) fn on() -> bool {
     set() != Set::Off && !crate::pipeline::builder_runs()
 }
 
+/// (VIctory-BigCheese) The least indirect light the estimate gives
+/// (`VICTORY_AMBIENT_FLOOR=<level>`, the units of `constant:<level>`; unset or
+/// 0: none). The estimate is the light of what is on screen, so in a covered
+/// bar or a room whose visible surfaces are all dark it stays dark, and
+/// what the sun does not reach directly is black; the floor is a constant
+/// under it, shaded in the creases like the constant.
+fn floor() -> f32 {
+    static SET: OnceLock<f32> = OnceLock::new();
+    *SET.get_or_init(|| {
+        let set = std::env::var("VICTORY_AMBIENT_FLOOR").unwrap_or_default();
+        set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0).unwrap_or(0.0)
+    })
+}
+
 /// The most the air scatters, as a multiple of the light around
 /// (`VICTORY_AMBIENT_AIR=<multiple>`; unset or 0: what the title has).
 fn air() -> f32 {
@@ -415,7 +429,7 @@ void raise(uint3 at : SV_DispatchThreadID) {
         open = saturate(1.0 - strength * 2.0 * sum / N);
     }
     float3 found;
-    if (constant > 0.0) {
+    if (constant > 0.0 && level <= 0.0) {
         found = float3(1.0, 0.98, 0.94) * constant * open;
         light[p] = pack(found);
         return;
@@ -442,6 +456,9 @@ void raise(uint3 at : SV_DispatchThreadID) {
     found = all + 1.2 * float3(dot(sr.xyz, n), dot(sg.xyz, n), dot(sb.xyz, n)) / sum;
     found = clamp(found, 0.2 * all, 2.5 * all);
     found = lerp(found, cells[CELLS].rgb, 0.2) * level * open;
+    // With a floor (`VICTORY_AMBIENT_FLOOR`): never darker than it, so a
+    // room whose visible surfaces are all dark is not left black.
+    if (constant > 0.0) found = max(found, float3(1.0, 0.98, 0.94) * constant * open);
     float3 was = unpack(light[p]);
     // Magenta (green far below red and blue) is what the probes' memory held, not light.
     if (was.g < 0.5 * min(was.r, was.b) && max(was.r, was.b) > 0.02) was = 0.0;
@@ -493,7 +510,7 @@ void fix_reflect(uint3 at : SV_DispatchThreadID) {
     if (at.x >= w || at.y >= h) return;
     int2 p = int2(at.xy);
     float3 around = float3(1.0, 0.98, 0.94) * constant;
-    if (constant <= 0.0) {
+    if (level > 0.0) {
         float2 g = (float2(at.xy) + 0.5) / float2(w, h) * float2(PX, PY) - 0.5;
         int2 g0 = int2(floor(g));
         float2 f = g - float2(g0);
@@ -505,6 +522,7 @@ void fix_reflect(uint3 at : SV_DispatchThreadID) {
             around += b.x * b.y * float3(points[at0].w, points[at0 + 1].w, points[at0 + 2].w);
         }
         around = lerp(around, cells[CELLS].rgb, 0.2) * level;
+        around = max(around, float3(1.0, 0.98, 0.94) * constant);
     }
     float base_luma = max(dot(around, LUMA), 1e-6);
     float3 was = unpack(light[p]);
@@ -639,13 +657,13 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     };
     let (level, constant) = match set() {
         Set::Off => return false,
-        Set::Estimate(level) => (level, 0.0f32),
+        Set::Estimate(level) => (level, floor()),
         Set::Constant(level) => (0.0, level),
     };
-    if role != Role::Radiance && constant == 0.0 && !KEPT.load(Ordering::Relaxed) {
+    if role != Role::Radiance && level > 0.0 && !KEPT.load(Ordering::Relaxed) {
         return false;
     }
-    if role == Role::Air && (constant > 0.0 || air() == 0.0) {
+    if role == Role::Air && (level <= 0.0 || air() == 0.0) {
         return false;
     }
     let reflect = if matches!(role, Role::Reflect | Role::Reflected) {
@@ -712,7 +730,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
             Role::Air => run(&pass.air, views.size[0].div_ceil(8), views.size[1].div_ceil(8), views.slices.div_ceil(2)),
             Role::Reflect | Role::Reflected => run(&pass.reflect, views.size[0].div_ceil(8), views.size[1].div_ceil(8), 1),
             Role::Resolve => {
-                if constant == 0.0 {
+                if level > 0.0 {
                     run(&pass.place, 8, 9, 1);
                     run(&pass.gather, 20, 45, 1);
                 }

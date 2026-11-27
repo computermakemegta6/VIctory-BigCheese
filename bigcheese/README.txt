@@ -103,9 +103,11 @@ layout): the mouse turns the camera, F6 takes the mouse or gives it back.
   E              interact (d-pad right)   Arrow keys    d-pad
   Esc / P        Menu                     V             View
 
-  Driving: W accelerate, S brake, Space handbrake, A / D steer (the steering
-  ramps over a quarter of a second instead of jumping to full lock;
-  VICTORY_KEY_STEER_MS=0 gives the old behaviour).
+  Driving (and boats): W accelerate, S brake, Space handbrake, A / D steer.
+  The steering eases to full lock over a tenth of a second instead of jumping
+  there, and is straight again the moment you let go (VICTORY_KEY_STEER_MS
+  sets the ease in milliseconds; 0 gives the old behaviour). In a boat or car
+  the window title should say "driving": F5 switches if it does not.
 
 
 Frame rate and AMD FSR
