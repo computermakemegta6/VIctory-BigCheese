@@ -1177,6 +1177,24 @@ const COPIED_GRACE: u64 = 4;
 /// In [`HostHeap::tabled`]: a draw read the slot in that frame.
 const TABLED_READ: u32 = 1 << 31;
 
+/// Whether a slot's table stamp ([`HostHeap::tabled`]: the frame a draw's
+/// table last showed it, plus one, in 31 bits; 0 never) is later than frame
+/// `cutoff`, seen from frame `frame`. A stamp without [`TABLED_READ`] counts
+/// too: the answer errs toward "used" (`crate::resource::slot_evict`).
+pub(crate) fn seen_since(stamp: u32, cutoff: u64, frame: u64) -> bool {
+    let stamp = stamp & !TABLED_READ;
+    if stamp == 0 {
+        return false;
+    }
+    let mask = !TABLED_READ;
+    let now = (frame as u32).wrapping_add(1) & mask;
+    let cut = (cutoff as u32).wrapping_add(1) & mask;
+    // Ages back from now, in the stamps' 31 bits.
+    let age = now.wrapping_sub(stamp) & mask;
+    let limit = now.wrapping_sub(cut) & mask;
+    age < limit
+}
+
 /// Since the start: writes of texture views into slots that count as a
 /// table's (due later), and slots that left the queue because a draw read
 /// them through a table.
@@ -2665,6 +2683,50 @@ impl HostHeap {
         }
         self.unmake(index);
         STALE[4].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    /// For `crate::resource::slot_evict`: every slot (title or dynamic)
+    /// showing one of the host textures `raws` (raw pointers), as (index,
+    /// raw, whether letting it go is safe, whether a draw's table showed it
+    /// after frame `cutoff`). Safe: a title slot a draw read through a table
+    /// lately, which that draw makes again by itself. Slots only shaders
+    /// pick by index (nothing would make them again) and dynamic ones (a
+    /// list not yet reset) are not.
+    pub(crate) fn slots_showing(
+        &self,
+        raws: &std::collections::HashSet<usize>,
+        frame: u64,
+        cutoff: u64,
+    ) -> Vec<(u32, usize, bool, bool)> {
+        self.kept
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                let raw = {
+                    let r = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    windows::core::Interface::as_raw(r.as_ref()?) as usize
+                };
+                raws.contains(&raw).then(|| {
+                    let i = i as u32;
+                    let ok = i < self.count && !self.sampler && self.tabled_lately(i, frame);
+                    (i, raw, ok, seen_since(self.tabled_stamp(i), cutoff, frame))
+                })
+            })
+            .collect()
+    }
+
+    /// For `crate::resource::slot_evict`: host slot `index` becomes null at
+    /// once (not after [`HostHeap::texture_slot_gone`]'s wait: the texture
+    /// is let go now, and the draw that reads the slot through its table
+    /// makes it again). True if the slot was made.
+    pub(crate) fn texture_slot_evict(&self, index: u32) -> bool {
+        let _made = self.made.lock(index);
+        if self.made.get(index).is_none_or(|key| key == 0) {
+            return false;
+        }
+        self.away.lock().unwrap_or_else(|e| e.into_inner()).remove(&index);
+        self.unmake(index);
         true
     }
 
