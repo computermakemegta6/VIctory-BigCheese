@@ -1,6 +1,7 @@
 @echo off
 rem VIctory-BigCheese-AMD: eikkapine's victory-amd with VIctory-BigCheese's changes,
-rem tuned for a PC with 16 GB of RAM.
+rem tuned for a PC with 16 GB of RAM. With 32 GB or more, also try Play.cmd
+rem (victory-amd's normal settings) and keep the faster one.
 rem Double-click it. If GAME_DIR below is empty, the first start asks for your
 rem game folder (the one with game_scarlett_master.exe) and remembers it in
 rem game-folder.txt. Every setting below can be overridden by setting the

@@ -15,13 +15,24 @@ How to play
 -----------
 1. Extract the whole zip anywhere (its own folder, or inside your game folder).
    Keep the fsr folder and early-pipelines.txt next to Play-16GB-RAM.cmd.
-2. Double-click Play-16GB-RAM.cmd.
+2. Double-click Play-16GB-RAM.cmd (16 GB of RAM) or Play.cmd (32 GB or more).
    The first time, it asks for your game folder (a "choose folder" window) and
    remembers it. If you extracted the zip inside your game folder, it finds the
    game by itself. You can also write the folder into the file: open
    Play-16GB-RAM.cmd in Notepad and fill in the GAME_DIR line at the top.
 3. The first start translates the game's shaders once (a few minutes). Then the
    game starts. Keep the black window open; closing it quits the game.
+
+Which launcher?
+  Play-16GB-RAM.cmd  the 16 GB tweaks: the game sees a Series S (about 7.6 GB
+                     for the game instead of 13.5), more buffers in the card's
+                     memory (the card window line at 90%), smaller upload and
+                     streaming memory. Needed on 16 GB of RAM.
+  Play.cmd           victory-amd's normal settings: Series X, default memory
+                     budgets, the card window line at 80%.
+With 32 GB of RAM or more, try both in the same place and keep the faster one
+(F3 shows the frame rate). Both share the game folder, shader cache and saves,
+and both have FSR 4, frame generation, the 60 fps menus and the crash fix.
 
 Windows SmartScreen may warn about victory.exe because it is not signed:
 "More info", then "Run anyway".
@@ -50,14 +61,16 @@ For AI agents setting this up for a user
    source; the zip has the built victory.exe.
 2. Ask the user where their game folder is (the folder with
    game_scarlett_master.exe and shaders.rpf). Check that the file is there.
-3. Edit Play-16GB-RAM.cmd: set the game folder on the GAME_DIR line at the top,
+3. Ask how much RAM the PC has (or check). Edit Play-16GB-RAM.cmd, and with
+   32 GB or more Play.cmd too: set the game folder on the GAME_DIR line at the top,
      set "GAME_DIR=D:\Games\GTA6"
    and only if the game's executable has another name or place, its full path
    on the GAME_EXE line:
      set "GAME_EXE=D:\Games\GTA6\game_scarlett_master.exe"
    Change nothing else, and keep the file's Windows (CRLF) line endings.
-4. Tell the user to double-click Play-16GB-RAM.cmd. The first start translates
-   shaders for a few minutes before the game opens.
+4. Tell the user to double-click Play-16GB-RAM.cmd (16 GB of RAM), or with
+   more RAM to try Play.cmd and Play-16GB-RAM.cmd and keep the faster one. The
+   first start translates shaders for a few minutes before the game opens.
 Notes: an agent running in a sandboxed app (such as the Claude desktop app) may
 have its writes under %LOCALAPPDATA% redirected where the game cannot see them,
 so do not copy saves or caches there yourself; give the user a .cmd to run.
@@ -104,7 +117,7 @@ Where things are kept
   Saves:         %LOCALAPPDATA%\victory-amd\data    (keep this to keep your saves)
 These are victory-amd's own folders, so a victory-amd install shares them.
 
-Every setting in Play-16GB-RAM.cmd is an environment variable; setting one
+Every setting in the launchers is an environment variable; setting one
 before starting the file wins over the file's value.
 
 
@@ -121,7 +134,8 @@ What this build changes from victory-amd
   and also when pipelines are made early.
 - Keyboard steering ramps instead of jumping to full lock.
 - Menus at up to 60 fps (the fork's installer has 30), gameplay uncapped.
-- One launcher, easy setup, with FSR 4 and frame generation on.
+- Two launchers (16 GB and normal), easy setup, with FSR 4 and frame
+  generation on.
 
 
 Known problems

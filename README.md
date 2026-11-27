@@ -7,11 +7,13 @@ cool_fox-based VIctory-BigCheese (releases v1.x).
 
 **[Download the latest build](https://github.com/computermakemegta6/VIctory-BigCheese/releases/latest)**
 (`VIctory-BigCheese-win64.zip`), extract the whole zip and double-click
-`Play-16GB-RAM.cmd`; the first start asks for your game folder. The zip has
-`victory.exe`, the launcher, AMD's FidelityFX DLLs (`fsr\`) and
-[bigcheese/README.txt](bigcheese/README.txt), which also has the steps for AI
-agents setting it up for a user. The launcher's source is
-[bigcheese/Play-16GB-RAM.cmd](bigcheese/Play-16GB-RAM.cmd).
+`Play-16GB-RAM.cmd` (16 GB of RAM) or `Play.cmd` (victory-amd's normal settings,
+32 GB or more; with that much RAM try both and keep the faster one); the first
+start asks for your game folder. The zip has `victory.exe`, both launchers,
+AMD's FidelityFX DLLs (`fsr\`) and [bigcheese/README.txt](bigcheese/README.txt),
+which also has the steps for AI agents setting it up for a user. The
+launchers' source: [bigcheese/Play-16GB-RAM.cmd](bigcheese/Play-16GB-RAM.cmd),
+[bigcheese/Play.cmd](bigcheese/Play.cmd).
 
 What this branch changes from victory-amd (2026-11-28):
 
