@@ -10,6 +10,13 @@ publisher. Licensed GPL-3.0, like VIctory (see [LICENSE](LICENSE)).
 
 ## Download and play
 
+> **From v2.0 on, the releases are built from the
+> [`amd` branch](../../tree/amd)**: [eikkapine/victory-amd](https://github.com/eikkapine/victory-amd)
+> (better shaders and graphics, FSR 4 with frame generation) with this fork's
+> 16 GB changes on top. Its zip has its own `README.txt`, with the steps for AI
+> agents. This `main` branch is the older cool_fox-based build: its last
+> release is [v1.2](../../releases/tag/v1.2).
+
 **[Download the latest build](../../releases/latest)** (`VIctory-BigCheese-win64.zip`), then:
 
 1. Extract the whole zip anywhere (its own folder, or inside your game folder).
