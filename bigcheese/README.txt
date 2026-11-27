@@ -37,6 +37,13 @@ and both have FSR 4, frame generation, the 60 fps menus and the crash fix.
 Windows SmartScreen may warn about victory.exe because it is not signed:
 "More info", then "Run anyway".
 
+If the game crashes, the black window shows the crash report under the exit
+code. A crash in the first seconds, every time, is often a game folder with a
+file missing or cut short (an unfinished copy or download): double-click
+Check-Game-Folder.cmd, which compares every file in your game folder with a
+working 1.0.2.1 one (names and sizes only; it changes nothing) and names any
+that are missing or the wrong size.
+
 
 What you need
 -------------
