@@ -10,33 +10,63 @@ publisher. Licensed GPL-3.0, like VIctory (see [LICENSE](LICENSE)).
 
 ## Download and play
 
-**[Download the latest build](../../releases/latest)** (Windows x64 zip), then:
+**[Download the latest build](../../releases/latest)** (`VIctory-BigCheese-win64.zip`), then:
 
-1. Extract the whole zip to a folder of its own (not into the game folder).
-2. Drag your game folder (the one with `game_scarlett_master.exe`) onto a
-   launcher. It remembers the folder, so after that a double-click is enough.
-   - `Play-cool_fox-16GB-RAM.cmd`: the tuned one, tested on 16 GB of RAM with a
-     Radeon 16 GB card. Start with this one.
-   - `Play-cool_fox.cmd`: plain, the emulator's own defaults and no tuning (for
-     trying other builds of `victory.exe`; rooms may look dark without the
-     tuned launcher's ambient light)
+1. Extract the whole zip anywhere (its own folder, or inside your game folder).
+2. Double-click **`Play-16GB-RAM.cmd`**. The first time it asks for your game
+   folder (the one with `game_scarlett_master.exe`) and remembers it; extracted
+   inside the game folder, it finds the game by itself. You can also fill in the
+   `GAME_DIR` line at the top of the file in Notepad.
+3. The first start translates the game's shaders once (a few minutes), then the
+   game opens. Keep the black window open; closing it quits the game.
 
-   (In the source code the launchers are in the `cool_fox` folder; in the
-   download zip they are next to `victory.exe`.)
-3. The first start translates the game's shaders once (a few minutes).
+Tested on an RX 9060 XT (16 GB), Ryzen 7 7800X3D, 16 GB of RAM. Needs Windows
+10/11 x64, an AVX2 CPU, a DX12 GPU with shader model 6.6 and mesh shaders, and
+the page file on "System managed size" (the game reserves 20-25 GB). Resizable
+BAR (Smart Access Memory) on helps a lot.
 
 Optional, AMD FSR upscaling and frame generation (any DX12 card): put
 `amd_fidelityfx_upscaler_dx12.dll`, `amd_fidelityfx_framegeneration_dx12.dll` and
 `amd_fidelityfx_loader_dx12.dll` from AMD's FidelityFX SDK in a folder named `fsr`
-next to the launchers. The tuned launchers use them when they are there.
+next to `Play-16GB-RAM.cmd`. The launcher uses them when they are there.
 
-Needs Windows 10/11 x64, an AVX2 CPU, a DX12 GPU with shader model 6.6 and mesh
-shaders, and the page file on "System managed size" (the game reserves 20-25 GB).
+## For AI agents setting this up for a user
 
-## What this fork changes (2026-11-27)
+1. Make sure the release zip is extracted, so that `Play-16GB-RAM.cmd` and
+   `victory.exe` are in one folder. If not, download and extract the latest one
+   into a folder **outside `%LOCALAPPDATA%`** (PowerShell):
 
-- **Two launchers:** `Play-cool_fox-16GB-RAM.cmd` (tuned, its shared settings in
-  `cool_fox-tuning.cmd`) and a plain `Play-cool_fox.cmd` with no tuning.
+   ```powershell
+   Invoke-WebRequest https://github.com/computermakemegta6/VIctory-BigCheese/releases/latest/download/VIctory-BigCheese-win64.zip -OutFile "$env:TEMP\VIctory-BigCheese-win64.zip"
+   Expand-Archive "$env:TEMP\VIctory-BigCheese-win64.zip" -DestinationPath "C:\Games" -Force
+   ```
+
+   That makes `C:\Games\VIctory-BigCheese\Play-16GB-RAM.cmd`. Do not build from
+   source: the zip has the built `victory.exe` (the source tree's copy of the
+   launcher, `cool_fox\Play-16GB-RAM.cmd`, has no `victory.exe` beside it).
+2. Ask the user where their game folder is (the folder with
+   `game_scarlett_master.exe` and `shaders.rpf`) and check that the file is there.
+3. Edit `Play-16GB-RAM.cmd`: put the game folder on the `GAME_DIR` line at the top,
+
+   ```bat
+   set "GAME_DIR=D:\Games\GTA6"
+   ```
+
+   and, only if the game's executable has another name or place, its full path
+   on the `GAME_EXE` line (`set "GAME_EXE=D:\Games\GTA6\game_scarlett_master.exe"`).
+   Change nothing else, and keep the file's Windows (CRLF) line endings.
+4. Tell the user to double-click `Play-16GB-RAM.cmd`. The first start translates
+   shaders for a few minutes before the game opens.
+
+An agent in a sandboxed app (such as the Claude desktop app) may have its writes
+under `%LOCALAPPDATA%` redirected where the game cannot see them: do not copy
+saves or caches there yourself; give the user a `.cmd` to run. Never copy or
+upload game files.
+
+## What this fork changes (2026-11-28)
+
+- **One launcher, easy setup:** `Play-16GB-RAM.cmd` with every setting in it;
+  it asks for the game folder once (or takes it from its `GAME_DIR` line).
 - **16 GB PCs:** buffers the CPU fills go to the card's memory (Resizable BAR)
   and may fill it to 90 % (`VICTORY_WINDOW_CARD_PERCENT`) before spilling into PC
   RAM. In the open world that held 17 real fps instead of dropping to about 10.
