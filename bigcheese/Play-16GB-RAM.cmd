@@ -180,11 +180,22 @@ if errorlevel 1 (
 )
 
 :play
-echo Starting the game (%VICTORY_CONSOLE%). Keep this window open; closing it quits the game. F3: FPS and VRAM.
+rem The game appends each crash report to this file; how long it is now, so
+rem that a crash shows only its own report.
+set "crashlog=%VICTORY_DATA_DIR%\7952987A\crashes.log"
+set "crashsize=0"
+if exist "%crashlog%" for %%A in ("%crashlog%") do set "crashsize=%%~zA"
+echo Starting the game (%VICTORY_CONSOLE%). Keep this window open; closing it quits the game.
+echo F3: FPS and VRAM. F7: frame generation off and on.
 "%runner%" run "%VICTORY_GAME_DIR%\%exe_name%" --console %VICTORY_CONSOLE% --execute
 set "code=%errorlevel%"
 if not "%code%"=="0" (
+  echo.
   echo The game ended with code %code%. The lines above may say why.
+  if exist "%crashlog%" powershell -NoProfile -Command "$b = [IO.File]::ReadAllBytes($env:crashlog); $s = [int64]$env:crashsize; if ($b.Length -gt $s) { ''; 'Crash report (from ' + $env:crashlog + '):'; ([Text.Encoding]::UTF8.GetString($b, $s, $b.Length - $s) -split [char]10 | Select-Object -First 60) -join [char]10 }"
+  echo.
+  echo Asking for help? Send a screenshot of this window, with the crash report
+  echo above if there is one, and say which card, how much RAM and when it crashed.
   pause
 )
 exit /b %code%

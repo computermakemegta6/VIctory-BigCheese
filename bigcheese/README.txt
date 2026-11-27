@@ -107,7 +107,10 @@ Frame rate and AMD FSR
   fsr\AMD-FidelityFX-SDK-LICENSE.md). FSR 4 upscaling and FSR 4 frame
   generation are on: a generated frame between each two real ones, which
   doubles what you see, not how fast the game runs.
-  VICTORY_FIDELITYFX_FRAMEGEN=0 turns frame generation off.
+  F7 pauses frame generation and starts it again while playing (the window
+  title says which); with it paused, what you see is the game's own frames,
+  with no ghosting on the HUD. VICTORY_FIDELITYFX_FRAMEGEN=0 turns it off
+  for the whole run.
 - F3 shows the frame rate and the card's memory.
 
 

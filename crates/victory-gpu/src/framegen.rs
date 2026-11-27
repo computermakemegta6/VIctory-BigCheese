@@ -425,6 +425,35 @@ static TOTAL_GENERATED: AtomicU64 = AtomicU64::new(0);
 /// Currently armed frame-generation mode: `0` off/disarmed, `3` FG 3.x, `4` FG 4.0.2 ML.
 static ACTIVE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+/// F7 pauses frame generation and starts it again. The proxy swap chain
+/// stays, so a paused present is an ordinary one (as with no upscaled frame).
+static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether F7 has paused frame generation.
+pub(crate) fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
+
+/// F7 was pressed since the last call, with one of our windows in front:
+/// frame generation paused or started again.
+fn poll_key() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F7};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    static DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // SAFETY: a plain key state query.
+    let down = unsafe { GetAsyncKeyState(i32::from(VK_F7)) } < 0;
+    if DOWN.swap(down, Ordering::Relaxed) || !down {
+        return;
+    }
+    let mut process = 0;
+    // SAFETY: plain queries; room for the answer.
+    unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut process) };
+    if process == std::process::id() {
+        let paused = !PAUSED.fetch_xor(true, Ordering::Relaxed);
+        tracing::info!(paused, "F7: FidelityFX frame generation {}", if paused { "paused" } else { "on again" });
+    }
+}
+
 /// Live frame-generation status for the HUD: `(armed_mode, total_generated)`.
 pub(crate) fn hud_status() -> (u8, u64) {
     (ACTIVE_MODE.load(Ordering::Relaxed), TOTAL_GENERATED.load(Ordering::Relaxed))
@@ -579,6 +608,12 @@ impl Presentation {
     ) -> bool {
         if ml_enabled() {
             camera::clear();
+        }
+        poll_key();
+        if paused() {
+            take_inputs();
+            self.disable(chain);
+            return false;
         }
         let Some(input) = take_inputs().filter(|i| i.frame.render.into_iter().zip(display).all(|(r, d)| r > 0 && r <= d)) else {
             self.disable(chain);

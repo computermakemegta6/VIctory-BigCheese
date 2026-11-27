@@ -10421,7 +10421,12 @@ impl Meter {
                 " | KBM: driving, W gas (F/F5 = on foot)"
             }
         };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame{kbm}");
+        let fg = match (crate::framegen::enabled(), crate::framegen::paused()) {
+            (false, _) => "",
+            (true, false) => " | FG on (F7 = off)",
+            (true, true) => " | FG off (F7 = on)",
+        };
+        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame{fg}{kbm}");
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
