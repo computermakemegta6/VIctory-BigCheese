@@ -30,6 +30,8 @@ Which launcher?
                      streaming memory. Needed on 16 GB of RAM.
   Play.cmd           victory-amd's normal settings: Series X, default memory
                      budgets, the card window line at 80%.
+  Play-No-FG.cmd     Play-16GB-RAM.cmd with frame generation off, for a
+                     game that crashes at the start or a card it fails on.
 With 32 GB of RAM or more, try both in the same place and keep the faster one
 (F3 shows the frame rate). Both share the game folder, shader cache and saves,
 and both have FSR 4, frame generation, the 60 fps menus and the crash fix.
@@ -42,7 +44,8 @@ code. A crash in the first seconds, every time, is often a game folder with a
 file missing or cut short (an unfinished copy or download): double-click
 Check-Game-Folder.cmd, which compares every file in your game folder with a
 working 1.0.2.1 one (names and sizes only; it changes nothing) and names any
-that are missing or the wrong size.
+that are missing or the wrong size. If the files are fine, try
+Play-No-FG.cmd: Play-16GB-RAM.cmd with frame generation off for the run.
 
 
 What you need
@@ -118,8 +121,8 @@ Frame rate and AMD FSR
   generation runs instead, by itself (the F3 panel shows FG3).
   F7 pauses frame generation and starts it again while playing (the window
   title says which); with it paused, what you see is the game's own frames,
-  with no ghosting on the HUD. VICTORY_FIDELITYFX_FRAMEGEN=0 turns it off
-  for the whole run.
+  with no ghosting on the HUD. Play-No-FG.cmd (or
+  VICTORY_FIDELITYFX_FRAMEGEN=0) turns it off for the whole run.
 - F3 shows the frame rate and the card's memory.
 
 
