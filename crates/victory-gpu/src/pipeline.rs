@@ -480,7 +480,12 @@ pub(crate) fn making() -> u64 {
 static DROPS: Mutex<Option<HashMap<usize, (u64, String)>>> = Mutex::new(None);
 
 /// Shader hashes as printed in the pipeline diagnostics.
-#[cfg(all(windows, feature = "diagnostics"))]
+///
+/// (VIctory-BigCheese) `VICTORY_SKIP_PIPELINES` works in every build, not
+/// only the diagnostics one: a shader that crashes the driver's compiler
+/// when its pipeline is made (f16876929fa64f9f in AMD's `amdxc64.dll`, met
+/// leaving the prison) is then never made, neither early nor at a draw.
+#[cfg(windows)]
 fn parse_skip_hashes(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -500,23 +505,32 @@ fn parse_skip_hashes(value: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(all(windows, feature = "diagnostics"))]
-fn skipped_shader(p: &Pipeline) -> Option<&str> {
+/// The hashes `VICTORY_SKIP_PIPELINES` names, read once.
+#[cfg(windows)]
+fn skip_hashes() -> &'static [String] {
     static HASHES: OnceLock<Vec<String>> = OnceLock::new();
-    let hashes = HASHES.get_or_init(|| {
+    HASHES.get_or_init(|| {
         let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
         parse_skip_hashes(&value)
-    });
+    })
+}
+
+/// The first of `shaders` that `VICTORY_SKIP_PIPELINES` names.
+#[cfg(windows)]
+fn skipped_of(shaders: &[Arc<Shader>]) -> Option<&str> {
+    let hashes = skip_hashes();
     if hashes.is_empty() {
         return None;
     }
-    p.shaders
-        .iter()
-        .find(|shader| hashes.contains(&shader.hash))
-        .map(|shader| shader.hash.as_str())
+    shaders.iter().find(|shader| hashes.contains(&shader.hash)).map(|shader| shader.hash.as_str())
 }
 
-#[cfg(all(windows, feature = "diagnostics"))]
+#[cfg(windows)]
+fn skipped_shader(p: &Pipeline) -> Option<&str> {
+    skipped_of(&p.shaders)
+}
+
+#[cfg(windows)]
 pub(crate) fn is_skipped(this: This) -> bool {
     !this.is_null() && skipped_shader(pipeline(this)).is_some()
 }
@@ -536,10 +550,7 @@ pub(crate) fn note_drop(this: This) {
         Some("no_pipeline_set".to_owned())
     } else {
         let p = pipeline(this);
-        #[cfg(feature = "diagnostics")]
         let skipped = skipped_shader(p).map(|hash| format!("skipped shader {hash}"));
-        #[cfg(not(feature = "diagnostics"))]
-        let skipped: Option<String> = None;
         skipped.or_else(|| make::missing(&p.host))
     };
     if let Some(why) = why {
@@ -614,8 +625,12 @@ fn hand_out(
     let host = Arc::new(make::Pending::new(shaders.clone(), graphics));
     #[cfg(windows)]
     known::note(host.key(), &shaders, host.graphics.as_deref());
+    // A skipped shader's pipeline is not started early either: making it is
+    // what crashes (`VICTORY_SKIP_PIPELINES`).
     #[cfg(windows)]
-    make::early(&host);
+    if skipped_of(&shaders).is_none() {
+        make::early(&host);
+    }
     #[cfg(windows)]
     let builder = of_builder(&shaders);
     #[cfg(windows)]

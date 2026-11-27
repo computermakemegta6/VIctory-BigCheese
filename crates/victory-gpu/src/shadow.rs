@@ -471,15 +471,76 @@ fn card_room_for(size: u64) -> Option<ID3D12Resource> {
 ///
 /// A window goes to the card while there is room under this number and
 /// while a fifth of the card's budget is free, as title buffers do
-/// (`card_for`): textures keep their room, and once they have filled the
-/// card later windows stay where they are. The CPU's side stays in the PC's
-/// memory, so the memory shared with the card does not shrink by this
-/// alone; what moves is what shaders read.
+/// (`card_for`; the share is [`window_card_percent`]): textures keep their
+/// room, and once they have filled the card later windows stay where they
+/// are. The CPU's side stays in the PC's memory, so the memory shared with
+/// the card does not shrink by this alone; what moves is what shaders read.
 fn window_card_most() -> u64 {
     static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MOST.get_or_init(|| {
         std::env::var("VICTORY_CARD_WINDOWS_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0) << 20
     })
+}
+
+/// (VIctory-BigCheese) The share of the card's budget, in percent, up to
+/// which a new window outside buffers gets a copy in the card's memory
+/// ([`window_room_for`], [`window_mapped_for`]): `VICTORY_WINDOW_CARD_PERCENT`,
+/// 50 to 95; 80 unless set, the fifth kept free before. Above it the window
+/// keeps its copy in the PC's memory that the card shares. On a 16 GB PC
+/// with a 16 GB card, at 80 the card stopped at about 11.5 of 14.5 GB in the
+/// open world, the rest went to PC memory, Windows paged, and the game fell
+/// to about 10 real fps; at 90 it used 12.7 GB of the card and held 17.
+fn window_card_percent() -> u64 {
+    static PERCENT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *PERCENT.get_or_init(|| window_card_percent_of(std::env::var("VICTORY_WINDOW_CARD_PERCENT").ok().as_deref()))
+}
+
+/// [`window_card_percent`] for the switch's value: a whole number, clamped
+/// to 50 to 95; 80 when it is unset or not a number.
+fn window_card_percent_of(value: Option<&str>) -> u64 {
+    value.and_then(|v| v.trim().parse::<u64>().ok()).map_or(80, |percent| percent.clamp(50, 95))
+}
+
+/// The bytes of the card's `budget` up to which windows get a copy in its
+/// memory, at `percent` ([`window_card_percent`]). Tenths first, so that 80
+/// gives exactly the `budget / 10 * 8` the line was before the switch.
+fn window_card_line(budget: u64, percent: u64) -> u64 {
+    u64::try_from(u128::from(budget / 10) * u128::from(percent) / 10).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod window_card_tests {
+    use super::{window_card_line, window_card_percent_of};
+
+    /// The switch is read as a percentage between 50 and 95, and anything
+    /// else leaves the line where it was.
+    #[test]
+    fn the_window_share_is_read_and_clamped() {
+        for unread in [None, Some(""), Some("eighty"), Some("-10"), Some("85%"), Some("8.5")] {
+            assert_eq!(window_card_percent_of(unread), 80, "{unread:?}");
+        }
+        assert_eq!(window_card_percent_of(Some("90")), 90);
+        assert_eq!(window_card_percent_of(Some(" 65 ")), 65);
+        assert_eq!(window_card_percent_of(Some("0")), 50);
+        assert_eq!(window_card_percent_of(Some("49")), 50);
+        assert_eq!(window_card_percent_of(Some("96")), 95);
+        assert_eq!(window_card_percent_of(Some("1000")), 95);
+    }
+
+    /// At 80 the line is the old `budget / 10 * 8` to the byte; other shares
+    /// move it as asked.
+    #[test]
+    fn the_default_share_keeps_the_old_line() {
+        for budget in [0, 9, 10, 99, 12_345, 22_000_000_000, 24 << 30, (24 << 30) + 7, u64::MAX / 10, u64::MAX] {
+            assert_eq!(window_card_line(budget, 80), budget / 10 * 8, "{budget}");
+        }
+        for budget in [20u64 << 30, u64::MAX] {
+            assert_eq!(window_card_line(budget, 50), budget / 10 * 5);
+            assert_eq!(window_card_line(budget, 90), budget / 10 * 9);
+            assert!(window_card_line(budget, 95) > window_card_line(budget, 90));
+            assert!(window_card_line(budget, 95) < budget);
+        }
+    }
 }
 
 /// Bytes alive of windows' card sides ([`window_card_most`]).
@@ -512,7 +573,7 @@ fn window_card_for(size: u64) -> Option<ID3D12Resource> {
 /// instead of 36; filling them costs the CPU what it did.
 ///
 /// Windows go there while a fifth of the card's budget is free, as with
-/// [`window_room_for`], which this comes before.
+/// [`window_room_for`], which this comes before ([`window_card_percent`]).
 fn window_mapped_most() -> u64 {
     static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MOST.get_or_init(|| {
@@ -532,7 +593,7 @@ fn window_mapped_for(size: u64) -> Option<(ID3D12Resource, *mut u8)> {
     }
     let host = host()?;
     if let Some([budget, used, ..]) = host.video_memory()
-        && used + size > budget / 10 * 8
+        && used + size > window_card_line(budget, window_card_percent())
     {
         return None;
     }
@@ -568,7 +629,7 @@ fn window_room_for(size: u64) -> Option<ID3D12Resource> {
         return None;
     }
     if let Some([budget, used, ..]) = host.video_memory()
-        && used + size > budget / 10 * 8
+        && used + size > window_card_line(budget, window_card_percent())
     {
         return None;
     }
@@ -3245,11 +3306,24 @@ pub(crate) fn let_go_idle() {
         if map.is_empty() {
             return;
         }
+        // (VIctory-BigCheese) A window in the card's memory the CPU maps
+        // (`window_mapped_for`) takes none of the PC's memory: letting it go
+        // after the PC's short idle time saves nothing there, and the next
+        // read makes it again and waits for it to be resident. On a 16 GB PC
+        // with the PC's memory always low that was 1,200 buffers made a
+        // second and 38 s of waiting a minute. Such windows stay a minute
+        // while the card is under the windows' line, and go as the others
+        // past it.
+        let mapped_idle_ms = match host().and_then(|h| h.video_memory()) {
+            Some([budget, used, ..]) if used < window_card_line(budget, window_card_percent()) => idle_ms.max(60_000),
+            _ => idle_ms,
+        };
         let mut eligible: Vec<(u64, (u64, u64), usize, u64)> = map
             .iter()
             .filter(|(_, s)| {
+                let ms = if s.mapped { mapped_idle_ms } else { idle_ms };
                 Arc::strong_count(s) == 1
-                    && crate::host::long_ago(s.used.load(Ordering::Relaxed), idle_ms, IDLE_FRAMES)
+                    && crate::host::long_ago(s.used.load(Ordering::Relaxed), ms, IDLE_FRAMES)
                     && crate::host::references(&s.buffer) == 1
             })
             .map(|(&key, s)| {

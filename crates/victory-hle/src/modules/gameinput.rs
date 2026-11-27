@@ -294,6 +294,55 @@ fn pc_keyboard_with(keys: &[KeyState], driving: bool, extra_binds: &[(u8, Bind)]
     pad
 }
 
+/// (VIctory-BigCheese) The milliseconds the keyboard's left stick takes from
+/// the middle to one side while a key pushes it sideways
+/// (`VICTORY_KEY_STEER_MS`, 250 unless set; 0: at once, as before). Keys push
+/// a stick all the way over at once: a car steered with A and D went to full
+/// lock with every tap, and a tap held over a slow frame was a swerve. Back
+/// to the middle it goes twice as fast. Only the keyboard's sideways axis: a
+/// real pad's stick is the player's own.
+fn key_steer_ms() -> u64 {
+    // (The hub's tests read whole pushes; `Steer`'s own test eases.)
+    if cfg!(test) {
+        return 0;
+    }
+    static MS: LazyLock<u64> = LazyLock::new(|| {
+        std::env::var("VICTORY_KEY_STEER_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(250)
+    });
+    *MS
+}
+
+/// Where the keyboard's left stick is sideways, moving toward where the keys
+/// push it ([`key_steer_ms`]).
+#[derive(Default)]
+struct Steer {
+    x: f32,
+    /// When it was last moved, in microseconds ([`now`]).
+    at: u64,
+}
+
+impl Steer {
+    /// `pad` with its left stick's sideways axis on its way to where the keys
+    /// put it, `ramp_ms` from the middle to a side.
+    fn smooth(&mut self, pad: PadState, now: u64, ramp_ms: u64) -> PadState {
+        let target = pad.left_x;
+        let elapsed = now.saturating_sub(self.at).min(100_000);
+        self.at = now;
+        if ramp_ms == 0 {
+            self.x = target;
+            return pad;
+        }
+        let mut step = elapsed as f32 / (ramp_ms as f32 * 1000.0);
+        // Letting go, or turning the other way: back through the middle faster.
+        if target.abs() < self.x.abs() || target * self.x < 0.0 {
+            step *= 2.0;
+        }
+        let gap = target - self.x;
+        self.x = if gap.abs() <= step { target } else { self.x + step * gap.signum() };
+        PadState { left_x: self.x, ..pad }
+    }
+}
+
 /// Two pads as one: buttons of both, and of each axis and trigger the one
 /// pushed further.
 fn merged(a: PadState, b: PadState) -> PadState {
@@ -508,6 +557,8 @@ struct State {
     pending: Vec<Event>,
     /// Device callbacks running now: token and thread.
     running: Vec<(u64, ThreadId)>,
+    /// The keyboard's left stick sideways, eased ([`key_steer_ms`]).
+    steer: Steer,
 }
 
 pub struct Hub {
@@ -555,6 +606,7 @@ impl Hub {
                 callbacks: Vec::new(),
                 pending: Vec::new(),
                 running: Vec::new(),
+                steer: Steer::default(),
             }),
             returned: Condvar::new(),
         }));
@@ -644,6 +696,9 @@ impl State {
     ) -> Vec<Event> {
         let now = now();
         let mut events = std::mem::take(&mut self.pending);
+        // The keyboard's sideways push eased (`VICTORY_KEY_STEER_MS`), before
+        // it meets any host pad.
+        let desktop = self.steer.smooth(desktop, now, key_steer_ms());
         if one_pad {
             let pad = pads.into_iter().flatten().fold(desktop, merged);
             self.update(devices, FALLBACK, Some(Value::Pad(pad)), now, &mut events);
@@ -1497,6 +1552,27 @@ mod tests {
     use crate::HostPolicy;
     use victory_loader::Provenance;
     use victory_pe::ImportSymbol;
+
+    #[test]
+    fn keys_steer_the_stand_in_gradually() {
+        let right = PadState { left_x: 1.0, left_y: 1.0, ..Default::default() };
+        let left = PadState { left_x: -1.0, ..Default::default() };
+        let mut steer = Steer { x: 0.0, at: 1_000_000 };
+        // A quarter of the way over after a quarter of the ramp; the other
+        // axis as the keys put it.
+        let p = steer.smooth(right, 1_062_500, 250);
+        assert_eq!((p.left_x, p.left_y), (0.25, 1.0));
+        // All the way over, and no further.
+        assert!(steer.smooth(right, 1_162_500, 250).left_x < 1.0);
+        assert_eq!(steer.smooth(right, 1_262_500, 250).left_x, 1.0);
+        assert_eq!(steer.smooth(right, 1_300_000, 250).left_x, 1.0);
+        // Turned the other way: back through the middle twice as fast.
+        assert_eq!(steer.smooth(left, 1_362_500, 250).left_x, 0.5);
+        // A frame that took long moves it no more than a tenth of a second would.
+        assert_eq!(steer.smooth(left, 9_000_000, 250).left_x, -0.3);
+        // No ramp: at once.
+        assert_eq!(steer.smooth(right, 9_000_001, 0).left_x, 1.0);
+    }
 
     #[derive(Default)]
     struct FakeHost {
