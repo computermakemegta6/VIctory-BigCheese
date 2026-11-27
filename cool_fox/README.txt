@@ -81,12 +81,13 @@ window to take the mouse (it then turns the camera); Left Alt gives it back.
 The keys are in %LOCALAPPDATA%\cool_fox\data\keys.txt (made on the first start).
 
 
-Optional: AMD FSR upscaling and frame generation
-------------------------------------------------
-Make a folder named fsr next to Play-16GB-RAM.cmd and put these three DLLs from
-AMD's FidelityFX SDK in it: amd_fidelityfx_upscaler_dx12.dll,
-amd_fidelityfx_framegeneration_dx12.dll, amd_fidelityfx_loader_dx12.dll. The
-launcher uses them when they are there. They are not included in this zip.
+AMD FSR upscaling and frame generation
+--------------------------------------
+The fsr folder holds AMD's FidelityFX SDK DLLs (upscaler, frame generation,
+loader; redistributed under AMD's licence, fsr\AMD-FidelityFX-SDK-LICENSE.md).
+The launcher uses them when they are there: keep the fsr folder next to
+Play-16GB-RAM.cmd. Without it the game uses its own, blurrier upscaler and no
+frame generation. VICTORY_FRAMEGEN=0 turns frame generation off.
 
 
 Where things are kept

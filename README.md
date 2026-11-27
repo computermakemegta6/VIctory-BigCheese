@@ -25,10 +25,10 @@ Tested on an RX 9060 XT (16 GB), Ryzen 7 7800X3D, 16 GB of RAM. Needs Windows
 the page file on "System managed size" (the game reserves 20-25 GB). Resizable
 BAR (Smart Access Memory) on helps a lot.
 
-Optional, AMD FSR upscaling and frame generation (any DX12 card): put
-`amd_fidelityfx_upscaler_dx12.dll`, `amd_fidelityfx_framegeneration_dx12.dll` and
-`amd_fidelityfx_loader_dx12.dll` from AMD's FidelityFX SDK in a folder named `fsr`
-next to `Play-16GB-RAM.cmd`. The launcher uses them when they are there.
+AMD FSR upscaling and frame generation (any DX12 card): the zip's `fsr` folder
+holds AMD's FidelityFX SDK DLLs (redistributed under AMD's licence,
+`fsr\AMD-FidelityFX-SDK-LICENSE.md`). Keep it next to `Play-16GB-RAM.cmd`;
+without it the game uses its own, blurrier upscaler and no frame generation.
 
 ## For AI agents setting this up for a user
 
