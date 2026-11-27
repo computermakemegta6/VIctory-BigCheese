@@ -5631,11 +5631,116 @@ fn null_like(words: &[u32; 10], at: D3D12_CPU_DESCRIPTOR_HANDLE) {
     let mut desc = srv_desc(&w);
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if missing_shown(&desc, at) {
+        return;
+    }
     // SAFETY: a slot of our heap; a null resource is allowed with a desc.
     unsafe {
         host.device
             .CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), at)
     };
+}
+
+/// (VIctory-BigCheese) `VICTORY_MISSING_TEXTURES=magenta`: a texture slot
+/// left without its texture (2D, 2D array or cube) shows bright magenta
+/// instead of reading zeros, so a screenshot tells a texture that never
+/// came (magenta) from one that came holding black (black). A test aid;
+/// off by default.
+fn missing_magenta() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var("VICTORY_MISSING_TEXTURES").is_ok_and(|v| v.trim().eq_ignore_ascii_case("magenta"));
+        if on {
+            tracing::info!("texture slots without their texture show magenta (VICTORY_MISSING_TEXTURES=magenta)");
+        }
+        on
+    })
+}
+
+/// The magenta textures of [`missing_magenta`]: one of one slice, one of
+/// six (for cubes), 4x4 RGBA8 with one mip, in memory the CPU writes.
+fn magenta_textures() -> Option<&'static (ID3D12Resource, ID3D12Resource)> {
+    static MADE: std::sync::OnceLock<Option<(ID3D12Resource, ID3D12Resource)>> = std::sync::OnceLock::new();
+    MADE.get_or_init(|| {
+        let host = host()?;
+        let make = |slices: u16| -> Option<ID3D12Resource> {
+            let heap = D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_CUSTOM,
+                CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+                MemoryPoolPreference: D3D12_MEMORY_POOL_L0,
+                ..Default::default()
+            };
+            let desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: 4,
+                Height: 4,
+                DepthOrArraySize: slices,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                ..Default::default()
+            };
+            let mut texture: Option<ID3D12Resource> = None;
+            let pixels = [0xffff_00ffu32; 16];
+            // SAFETY: plain creation; each slice is written whole through a
+            // null mapping (`WriteToSubresource`), before any view of it.
+            unsafe {
+                host.device
+                    .CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, None, &mut texture)
+                    .ok()?;
+                let texture = texture?;
+                for slice in 0..u32::from(slices) {
+                    texture.Map(slice, None, None).ok()?;
+                    let wrote = texture.WriteToSubresource(slice, None, pixels.as_ptr().cast(), 16, 64);
+                    texture.Unmap(slice, None);
+                    wrote.ok()?;
+                }
+                Some(texture)
+            }
+        };
+        let made = make(1).zip(make(6));
+        if made.is_none() {
+            tracing::warn!("VICTORY_MISSING_TEXTURES=magenta: the magenta textures could not be made; slots read zeros");
+        }
+        made
+    })
+    .as_ref()
+}
+
+/// With [`missing_magenta`]: the slot at `at` views a magenta texture of
+/// the null view `desc`'s dimension. Whether it did.
+fn missing_shown(desc: &D3D12_SHADER_RESOURCE_VIEW_DESC, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> bool {
+    if !missing_magenta() {
+        return false;
+    }
+    let (Some(host), Some((one, six))) = (host(), magenta_textures()) else {
+        return false;
+    };
+    let mut view = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        ViewDimension: desc.ViewDimension,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        ..Default::default()
+    };
+    let texture = match desc.ViewDimension {
+        D3D12_SRV_DIMENSION_TEXTURE2D => {
+            view.Anonymous.Texture2D = D3D12_TEX2D_SRV { MipLevels: 1, ..Default::default() };
+            one
+        }
+        D3D12_SRV_DIMENSION_TEXTURE2DARRAY => {
+            view.Anonymous.Texture2DArray = D3D12_TEX2D_ARRAY_SRV { MipLevels: 1, ArraySize: 1, ..Default::default() };
+            one
+        }
+        D3D12_SRV_DIMENSION_TEXTURECUBE => {
+            view.Anonymous.TextureCube = D3D12_TEXCUBE_SRV { MipLevels: 1, ..Default::default() };
+            six
+        }
+        _ => return false,
+    };
+    // SAFETY: a slot of our heap; a live texture of the view's dimension.
+    unsafe { host.device.CreateShaderResourceView(texture, Some(&view), at) };
+    true
 }
 
 /// A view that reads zeros, for slots whose view the host cannot make.
@@ -5655,6 +5760,9 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
             },
         },
     };
+    if missing_shown(&desc, at) {
+        return;
+    }
     // SAFETY: a slot of our heap; a null resource is allowed with a desc.
     unsafe {
         host.device
