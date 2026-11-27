@@ -50,7 +50,7 @@ call :check_game && goto :game_found
 echo First start: choose your game folder (the folder with game_scarlett_master.exe).
 :ask
 set "VICTORY_GAME_DIR="
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Choose your game folder (the folder with game_scarlett_master.exe)'; $d.ShowNewFolderButton = $false; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }" 2^>nul`) do set "VICTORY_GAME_DIR=%%D"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $o = New-Object System.Windows.Forms.Form -Property @{TopMost = $true; ShowInTaskbar = $false}; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Choose your game folder (the folder with game_scarlett_master.exe)'; $d.ShowNewFolderButton = $false; if ($d.ShowDialog($o) -eq 'OK') { $d.SelectedPath }; $o.Dispose()" 2^>nul`) do set "VICTORY_GAME_DIR=%%D"
 if not defined VICTORY_GAME_DIR (
   echo No folder chosen. You can also type or paste the folder's path here.
   set /p "VICTORY_GAME_DIR=Game folder (or Enter to quit): "
