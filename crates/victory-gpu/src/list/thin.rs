@@ -311,8 +311,44 @@ impl Drop for Recording {
                 STATS[3].fetch_add(1, Relaxed);
                 super::close(inner.back as This);
             }
-            held(&BACKS).push(inner.back);
+            keep_back(inner.back);
         }
+    }
+}
+
+/// The most lists of ours kept for recordings to come
+/// (`VICTORY_THIN_BACKS_MAX`; unset: no limit, as before). Each is a whole
+/// list with its own host list and allocators at the most they ever held;
+/// the pool kept every one a burst of recordings ever made (about 800 in a
+/// run). Past the limit a list is let go behind the submissions running.
+fn backs_most() -> usize {
+    static MOST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_THIN_BACKS_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .map_or(usize::MAX, |n: usize| n.max(4))
+    })
+}
+
+/// Lists of ours let go past [`backs_most`], since the start.
+static BACKS_LET_GO: AtomicU64 = AtomicU64::new(0);
+
+/// `back` (a closed list of ours nobody uses) is kept for [`back_list`], or
+/// let go if the pool holds [`backs_most`] already.
+fn keep_back(back: usize) {
+    let mut backs = held(&BACKS);
+    if backs.len() < backs_most() {
+        backs.push(back);
+        return;
+    }
+    drop(backs);
+    // SAFETY: a list of ours made by `back_list` (`Box::into_raw`), which
+    // nobody uses any more; it goes behind the submissions running now.
+    crate::host::retire(unsafe { Box::from_raw(back as *mut super::List) });
+    let n = BACKS_LET_GO.fetch_add(1, Relaxed) + 1;
+    if n.is_power_of_two() && n >= 16 {
+        tracing::info!("thin recordings' lists of ours let go past VICTORY_THIN_BACKS_MAX={}: {n} so far", backs_most());
     }
 }
 
