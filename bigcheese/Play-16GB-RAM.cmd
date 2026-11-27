@@ -135,6 +135,13 @@ if not defined VICTORY_FRAME_INTERVAL_MS set "VICTORY_FRAME_INTERVAL_MS=16.667"
 if not defined VICTORY_FPS_CAP set "VICTORY_FPS_CAP=60"
 if not defined VICTORY_PIPELINE_WAIT_MS set "VICTORY_PIPELINE_WAIT_MS=50"
 if not defined VICTORY_PC_CONTROLS set "VICTORY_PC_CONTROLS=1"
+rem (VIctory-BigCheese) The game bakes its characters' skin into textures of
+rem its own while it loads, from textures it picks by index: one not yet on the
+rem card is baked as nothing, for the whole run (black skin). victory-amd gives
+rem the uploads before a bake 250 ms and 12 ms a frame; cool_fox measured that
+rem 40 and 10000 baked faces whole with no slower frames (draw.rs early_budgets).
+if not defined VICTORY_EARLY_TEXTURES_MS set "VICTORY_EARLY_TEXTURES_MS=40"
+if not defined VICTORY_BAKE_TEXTURES_MS set "VICTORY_BAKE_TEXTURES_MS=10000"
 
 rem AMD FidelityFX SDK DLLs (FSR 4 on an RX 9000 card), from the fsr (or
 rem fidelityfx-sdk) folder next to this file. The installer's "BEST" launcher also sets
