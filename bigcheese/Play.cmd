@@ -123,6 +123,19 @@ rem shown with frame generation). victory-amd's installer has 33.333 and
 rem VICTORY_FPS_CAP=30: set those before this file to lock everything to 30.
 if not defined VICTORY_FRAME_INTERVAL_MS set "VICTORY_FRAME_INTERVAL_MS=16.667"
 if not defined VICTORY_FPS_CAP set "VICTORY_FPS_CAP=60"
+rem (VIctory-BigCheese) The memory stack, ported from skornuta/victory-memory-stack:
+rem command allocators taken anew every 30 s (they keep the most a list ever
+rem recorded), at most 128 idle lists of each kind kept, the lists' small budgets
+rem sharing buffers, and idle textures let go when the card is over 80% full (to
+rem 70%) so new ones have room. Set any of these to 0 before this file to turn
+rem it off.
+if not defined VICTORY_ALLOCATOR_TRIM set "VICTORY_ALLOCATOR_TRIM=1"
+if not defined VICTORY_THIN_BACKS_MAX set "VICTORY_THIN_BACKS_MAX=128"
+if not defined VICTORY_IDLE_LISTS set "VICTORY_IDLE_LISTS=128"
+if not defined VICTORY_BUDGET_PACK set "VICTORY_BUDGET_PACK=1"
+if not defined VICTORY_SLOT_EVICT set "VICTORY_SLOT_EVICT=1"
+if not defined VICTORY_SLOT_EVICT_PERCENT set "VICTORY_SLOT_EVICT_PERCENT=80"
+if not defined VICTORY_SLOT_EVICT_LOW_PERCENT set "VICTORY_SLOT_EVICT_LOW_PERCENT=70"
 if not defined VICTORY_PIPELINE_WAIT_MS set "VICTORY_PIPELINE_WAIT_MS=50"
 if not defined VICTORY_PC_CONTROLS set "VICTORY_PC_CONTROLS=1"
 rem (VIctory-BigCheese) The game bakes its characters' skin into textures of
