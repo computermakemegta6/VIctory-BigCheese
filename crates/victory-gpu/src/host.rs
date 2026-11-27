@@ -1420,7 +1420,10 @@ fn give_batch_buffers(buffers: Vec<ID3D12Resource>) {
 
 /// A host command list and its allocator, always used together.
 pub(crate) struct HostList {
-    allocator: ID3D12CommandAllocator,
+    /// Its command allocator and when it was made ([`now_ms`]): with
+    /// [`allocator_trim`] a reset now and then takes a new one, and the old
+    /// one, which keeps the most memory its list ever recorded into it, goes.
+    allocator: Mutex<(ID3D12CommandAllocator, u64)>,
     /// With barriers held and joined (`rec`).
     pub(crate) list: rec::Rec,
     /// Work for submission time, in recorded order.
@@ -1440,7 +1443,7 @@ pub(crate) struct HostList {
     twins: Mutex<std::collections::HashMap<usize, TwinUse>>,
     /// The list that runs those transitions just before this one, made
     /// when the list first has such transitions ([`lazy_prelude`]).
-    prelude: OnceLock<Option<Prelude>>,
+    prelude: OnceLock<Option<ListPrelude>>,
     /// The pipelines the list binds, for reports of slow submissions.
     pipelines: std::sync::Arc<Mutex<std::collections::BTreeSet<String>>>,
     /// What its indirect executions ran, for the report of a removed device.
@@ -1481,6 +1484,78 @@ pub(crate) struct HostList {
 
 /// A list's prelude: an allocator and a closed list.
 type Prelude = (ID3D12CommandAllocator, ID3D12GraphicsCommandList);
+
+/// A host list's prelude: an allocator of its own and when it was made
+/// ([`allocator_trim`]), or none when it records into its list's allocator
+/// ([`shared_prelude`]), and its closed list.
+type ListPrelude = (Option<Mutex<(ID3D12CommandAllocator, u64)>>, ID3D12GraphicsCommandList);
+
+/// Whether host command allocators are taken anew now and then
+/// (`VICTORY_ALLOCATOR_TRIM=1`; off by default; from the memory stack's
+/// "allocator trim"). A D3D12 command allocator never gives back the memory
+/// of the most its list ever recorded into it: a list that once took a
+/// loading frame's commands keeps that for the run. With the switch a list's
+/// reset (and a prelude's of its own, before it records again: the only
+/// moments its allocator holds nothing that runs) takes a new allocator when
+/// the one it has is `VICTORY_ALLOCATOR_TRIM_S` seconds old (30), and the old
+/// one goes behind the submissions still running ([`retire`]).
+pub(crate) fn allocator_trim() -> Option<u64> {
+    static S: OnceLock<Option<u64>> = OnceLock::new();
+    *S.get_or_init(|| {
+        std::env::var_os("VICTORY_ALLOCATOR_TRIM").is_some_and(|v| v == "1").then(|| {
+            std::env::var("VICTORY_ALLOCATOR_TRIM_S")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(30u64)
+                .clamp(5, 3600)
+        })
+    })
+}
+
+/// Since the start: host list allocators and prelude allocators taken anew
+/// ([`allocator_trim`]).
+pub(crate) static ALLOCATOR_TRIMS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// With [`allocator_trim`]: `slot` (an allocator and when it was made) takes
+/// a new allocator if its own is old enough; the old one is retired. Whether
+/// it did (the new one needs no reset). To be called only where the
+/// allocator's last commands have run and no list records into it.
+fn allocator_refresh(slot: &mut (ID3D12CommandAllocator, u64), count: &std::sync::atomic::AtomicU64) -> bool {
+    let Some(secs) = allocator_trim() else {
+        return false;
+    };
+    let now = now_ms();
+    if now.saturating_sub(slot.1) < secs * 1000 {
+        return false;
+    }
+    let Some(host) = host() else {
+        return false;
+    };
+    // SAFETY: plain object creation.
+    let made: windows::core::Result<ID3D12CommandAllocator> =
+        unsafe { host.device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) };
+    match made {
+        Ok(fresh) => {
+            let old = std::mem::replace(slot, (fresh, now));
+            retire(old.0);
+            let n = count.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_power_of_two() && n >= 16 {
+                tracing::info!(
+                    "command allocators taken anew (VICTORY_ALLOCATOR_TRIM): {} of host lists, {} of preludes so far",
+                    ALLOCATOR_TRIMS[0].load(Ordering::Relaxed),
+                    ALLOCATOR_TRIMS[1].load(Ordering::Relaxed)
+                );
+            }
+            true
+        }
+        Err(_) => {
+            // No new one now: the old one serves on, and is asked again later.
+            slot.1 = now;
+            false
+        }
+    }
+}
 
 /// Rotating ring of indirect-argument scratch buffers per host list so
 /// consecutive clamps do not serialize on a single scratch resource.
@@ -4750,7 +4825,7 @@ impl Host {
             )?;
             let prelude = OnceLock::new();
             if !lazy_prelude() {
-                let _ = prelude.set(self.make_prelude(None));
+                let _ = prelude.set(self.make_prelude(None).map(|(a, l)| (Some(Mutex::new((a, now_ms()))), l)));
             }
             #[cfg(feature = "diagnostics")]
             let notes = std::sync::Arc::<Mutex<Vec<Note>>>::default();
@@ -4776,7 +4851,7 @@ impl Host {
                 );
             }
             Ok(HostList {
-                allocator,
+                allocator: Mutex::new((allocator, now_ms())),
                 list: rec::Rec::new(list),
                 deferred: Mutex::default(),
                 scratch: Mutex::default(),
@@ -7212,12 +7287,15 @@ impl HostList {
                 give_batch_buffers(buffers);
             }
         }
-        // SAFETY: the list is not executing.
+        let mut allocator = self.allocator.lock().unwrap_or_else(|e| e.into_inner());
+        // Every submission of the list (and of a prelude sharing its
+        // allocator) has run: the allocator may be swapped for a new one.
+        let fresh = allocator_refresh(&mut allocator, &ALLOCATOR_TRIMS[0]);
+        // SAFETY: the list is not executing; a fresh allocator is new and empty.
         let reset = unsafe {
-            self.allocator
-                .Reset()
-                .and_then(|()| self.list.Reset(&self.allocator, None))
+            (if fresh { Ok(()) } else { allocator.0.Reset() }).and_then(|()| self.list.Reset(&allocator.0, None))
         };
+        drop(allocator);
         if let Err(e) = reset {
             fail(format_args!("a host command list did not reset ({e})"));
         }
@@ -7632,18 +7710,38 @@ impl HostList {
             return None;
         }
         let shared = shared_prelude();
-        let Some((allocator, list)) = self
+        let Some((own, list)) = self
             .prelude
-            .get_or_init(|| host().and_then(|h| h.make_prelude(shared.then_some(&self.allocator))))
+            .get_or_init(|| {
+                let current = shared.then(|| self.allocator.lock().unwrap_or_else(|e| e.into_inner()).0.clone());
+                host().and_then(|h| h.make_prelude(current.as_ref())).map(|(a, l)| {
+                    (
+                        (!shared).then(|| Mutex::new((a, now_ms()))),
+                        l,
+                    )
+                })
+            })
             .as_ref()
         else {
             fail(format_args!("no host list for a state prelude"));
         };
+        // A prelude of its own may take a new allocator (`allocator_trim`); a
+        // shared one records into the list's allocator as it is now (a reset
+        // of the list may have taken a new one, and the old one goes).
+        let (allocator, fresh) = match own {
+            Some(own) => {
+                let mut own = own.lock().unwrap_or_else(|e| e.into_inner());
+                let fresh = allocator_refresh(&mut own, &ALLOCATOR_TRIMS[1]);
+                (own.0.clone(), fresh)
+            }
+            None => (self.allocator.lock().unwrap_or_else(|e| e.into_inner()).0.clone(), false),
+        };
+        let allocator = &allocator;
         // SAFETY: the prelude is not executing (every submission is waited
         // for); the textures are live. A shared allocator is the list's,
-        // which only the list's reset resets.
+        // which only the list's reset resets; a fresh one is new and empty.
         let recorded = unsafe {
-            (if shared { Ok(()) } else { allocator.Reset() }).and_then(|()| {
+            (if own.is_none() || fresh { Ok(()) } else { allocator.Reset() }).and_then(|()| {
                 list.Reset(allocator, None)?;
                 if !aliasing.is_empty() {
                     list.ResourceBarrier(&aliasing);
