@@ -1,7 +1,7 @@
 @echo off
 rem cool_fox for a PC with 16 GB of RAM: the tuned settings (cool_fox-tuning.cmd)
 rem plus settings that keep less in the PC's memory. Tested on 16 GB of RAM with
-rem an RX 7900-class card (16 GB). Any setting can be overridden by setting the
+rem an RX 9060 XT (16 GB). Any setting can be overridden by setting the
 rem variable before starting this file.
 setlocal EnableExtensions DisableDelayedExpansion
 

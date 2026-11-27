@@ -34,7 +34,7 @@ rem fsr folder next to the launchers.
 if not defined VICTORY_FSR_DLL if exist "%~dp0fsr\amd_fidelityfx_upscaler_dx12.dll" set "VICTORY_FSR_DLL=%~dp0fsr\amd_fidelityfx_upscaler_dx12.dll"
 
 rem AMD FSR frame generation: a generated frame between each two real ones (on a
-rem 16 GB PC with an RX 7900-class card: 14.6 real fps shown as 23.7). It doubles
+rem 16 GB PC with an RX 9060 XT: 14.6 real fps shown as 23.7). It doubles
 rem what you see, not how fast the game runs or answers. VICTORY_FRAMEGEN=0 turns it off.
 if not defined VICTORY_FRAMEGEN set "VICTORY_FRAMEGEN=1"
 
