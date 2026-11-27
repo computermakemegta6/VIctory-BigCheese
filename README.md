@@ -13,15 +13,16 @@ publisher. Licensed GPL-3.0, like VIctory (see [LICENSE](LICENSE)).
 **[Download the latest build](../../releases/latest)** (Windows x64 zip), then:
 
 1. Extract the whole zip to a folder of its own (not into the game folder).
-2. Pick the launcher for your PC's RAM and drag your game folder (the one with
-   `game_scarlett_master.exe`) onto it. It remembers the folder, so after that a
-   double-click is enough.
-   - `Play-cool_fox-16GB-RAM.cmd`: tested (16 GB RAM, Radeon 16 GB card)
-   - `Play-cool_fox-32GB-RAM.cmd`: not tested yet
-   - `Play-cool_fox-64GB-RAM.cmd`: cool_fox's original memory settings
+2. Drag your game folder (the one with `game_scarlett_master.exe`) onto a
+   launcher. It remembers the folder, so after that a double-click is enough.
+   - `Play-cool_fox-16GB-RAM.cmd`: the tuned one, tested on 16 GB of RAM with a
+     Radeon 16 GB card. Start with this one.
    - `Play-cool_fox.cmd`: plain, the emulator's own defaults and no tuning (for
      trying other builds of `victory.exe`; rooms may look dark without the
-     tuned launchers' ambient light)
+     tuned launcher's ambient light)
+
+   (In the source code the launchers are in the `cool_fox` folder; in the
+   download zip they are next to `victory.exe`.)
 3. The first start translates the game's shaders once (a few minutes).
 
 Optional, AMD FSR upscaling and frame generation (any DX12 card): put
@@ -34,8 +35,8 @@ shaders, and the page file on "System managed size" (the game reserves 20-25 GB)
 
 ## What this fork changes (2026-11-27)
 
-- **Launchers by RAM** (16 / 32 / 64 GB) sharing `cool_fox-tuning.cmd`; the plain
-  launcher has no tuning.
+- **Two launchers:** `Play-cool_fox-16GB-RAM.cmd` (tuned, its shared settings in
+  `cool_fox-tuning.cmd`) and a plain `Play-cool_fox.cmd` with no tuning.
 - **16 GB PCs:** buffers the CPU fills go to the card's memory (Resizable BAR)
   and may fill it to 90 % (`VICTORY_WINDOW_CARD_PERCENT`) before spilling into PC
   RAM. In the open world that held 17 real fps instead of dropping to about 10.

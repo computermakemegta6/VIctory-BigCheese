@@ -1,7 +1,7 @@
 @echo off
-rem The tuned settings the Play-cool_fox-*GB-RAM.cmd launchers share. Not to be
-rem started on its own: they call it, then Play-cool_fox.cmd. Every setting can
-rem be overridden by setting the variable before starting a launcher. No
+rem The tuned settings of Play-cool_fox-16GB-RAM.cmd, kept apart. Not to be
+rem started on its own: it calls this, then Play-cool_fox.cmd. Every setting can
+rem be overridden by setting the variable before starting the launcher. No
 rem setlocal here: what it sets must reach the launcher that called it.
 
 rem cool_fox's pareto-residency settings, except VICTORY_LEVELS_ON_DEMAND, which

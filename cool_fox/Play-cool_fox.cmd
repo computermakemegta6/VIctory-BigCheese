@@ -1,8 +1,8 @@
 @echo off
 rem cool_fox (a VIctory fork) launcher, plain: Series S mode with the emulator's
 rem own defaults and no tuning, so any build of victory.exe can be run with it.
-rem The tuned launchers are Play-cool_fox-16GB-RAM.cmd, -32GB-RAM.cmd and
-rem -64GB-RAM.cmd (by the PC's RAM); they set their settings, then call this.
+rem The tuned launcher is Play-cool_fox-16GB-RAM.cmd: it sets its settings, then
+rem calls this.
 rem
 rem Start it by dragging your game folder (the folder with game_scarlett_master.exe)
 rem onto this file, or run:  Play-cool_fox.cmd "D:\path\to\your\game"
