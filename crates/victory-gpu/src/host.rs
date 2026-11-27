@@ -1452,7 +1452,7 @@ pub(crate) struct HostList {
     /// The work its indirect executions may still do (`indirect`): a
     /// shader-writable word, zeroed when the list is submitted, and after
     /// it what the clamp notes about mesh records. In memory the CPU maps.
-    budget: OnceLock<Option<(ID3D12Resource, usize)>>,
+    budget: OnceLock<Option<Budget>>,
     /// The same words in the card's own memory ([`card_budget`]), which the
     /// clamp uses instead when there is one: zeroed in the list before its
     /// first clamp, its notes copied to `budget` when the list closes.
@@ -1489,6 +1489,88 @@ type Prelude = (ID3D12CommandAllocator, ID3D12GraphicsCommandList);
 /// ([`allocator_trim`]), or none when it records into its list's allocator
 /// ([`shared_prelude`]), and its closed list.
 type ListPrelude = (Option<Mutex<(ID3D12CommandAllocator, u64)>>, ID3D12GraphicsCommandList);
+
+/// Whether host lists' indirect-work budgets in memory the CPU maps share
+/// buffers (`VICTORY_BUDGET_PACK=1`; off by default; from the memory
+/// stack's "budget pack"). A budget is 256 bytes; each list made a buffer
+/// of its own for it, and a buffer takes 64 KiB. With the switch a budget is
+/// a 256-byte slot of a 64 KiB buffer of [`BUDGET_SLABS`], given back behind
+/// the submissions running when its list goes ([`retire`]). The card's copy
+/// of the budget ([`card_budget`]) stays a buffer of its own: lists change
+/// its state with barriers.
+fn budget_pack() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_BUDGET_PACK").is_some_and(|v| v == "1"))
+}
+
+const BUDGET_SLOT: u64 = 256;
+const BUDGET_SLAB: u64 = 64 << 10;
+
+/// The budgets' shared buffers (buffer, mapping, GPU address) and their
+/// free slots (buffer, offset).
+static BUDGET_SLABS: Mutex<(Vec<(ID3D12Resource, usize, u64)>, Vec<(usize, u64)>)> =
+    Mutex::new((Vec::new(), Vec::new()));
+
+/// A host list's indirect-work budget in memory the CPU maps: a buffer of
+/// its own (`slab` none, `offset` 0) or a slot of a shared one.
+struct Budget {
+    buffer: ID3D12Resource,
+    offset: u64,
+    /// Its first byte, mapped.
+    data: usize,
+    gpu: u64,
+    slab: Option<usize>,
+}
+
+/// Gives a slot back when dropped ([`retire`] drops it once the
+/// submissions running at the list's end have finished).
+struct BudgetFree(usize, u64);
+
+impl Drop for BudgetFree {
+    fn drop(&mut self) {
+        BUDGET_SLABS.lock().unwrap_or_else(|e| e.into_inner()).1.push((self.0, self.1));
+    }
+}
+
+impl Drop for Budget {
+    fn drop(&mut self) {
+        if let Some(slab) = self.slab {
+            retire(BudgetFree(slab, self.offset));
+        }
+    }
+}
+
+impl Budget {
+    fn new() -> Option<Budget> {
+        if !budget_pack() {
+            let (buffer, data) = host()?.shared_buffer(BUDGET_SLOT)?;
+            // SAFETY: a live buffer.
+            let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+            return Some(Budget { buffer, offset: 0, data: data as usize, gpu, slab: None });
+        }
+        let mut slabs = BUDGET_SLABS.lock().unwrap_or_else(|e| e.into_inner());
+        if slabs.1.is_empty() {
+            let (buffer, data) = host()?.shared_buffer(BUDGET_SLAB)?;
+            name(&buffer, || "indirect budgets".into());
+            // SAFETY: a live buffer.
+            let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+            let at = slabs.0.len();
+            slabs.0.push((buffer, data as usize, gpu));
+            // Taken from the front: the slab's first slot first.
+            slabs.1.extend((0..BUDGET_SLAB / BUDGET_SLOT).rev().map(|k| (at, k * BUDGET_SLOT)));
+        }
+        let (slab, offset) = slabs.1.pop()?;
+        let (buffer, data, gpu) = &slabs.0[slab];
+        let (buffer, data, gpu) = (buffer.clone(), data + offset as usize, gpu + offset);
+        drop(slabs);
+        // A slot given back holds its last list's words: zeroed, as a new
+        // buffer is.
+        // SAFETY: the slot's 256 mapped bytes, ours alone now (its last
+        // list's submissions ran).
+        unsafe { std::ptr::write_bytes(data as *mut u8, 0, BUDGET_SLOT as usize) };
+        Some(Budget { buffer, offset, data, gpu, slab: Some(slab) })
+    }
+}
 
 /// Whether host command allocators are taken anew now and then
 /// (`VICTORY_ALLOCATOR_TRIM=1`; off by default; from the memory stack's
@@ -8061,13 +8143,8 @@ impl HostList {
     /// The host address of the list's indirect-work budget, zeroed at each
     /// submission of the list from the first use after a reset on.
     pub(crate) fn budget(&self) -> Option<u64> {
-        let (buffer, data) = self
-            .budget
-            .get_or_init(|| {
-                let (b, d) = host()?.shared_buffer(256)?;
-                Some((b, d as usize))
-            })
-            .as_ref()?;
+        let budget = self.budget.get_or_init(Budget::new).as_ref()?;
+        let data = &budget.data;
         let card = self.card_budget.get_or_init(|| self.make_card_budget()).as_ref();
         let mut deferred = self.deferred();
         if !deferred.budget_zeroed {
@@ -8098,7 +8175,7 @@ impl HostList {
             }
         }
         // SAFETY: a live buffer.
-        Some(unsafe { card.unwrap_or(buffer).GetGPUVirtualAddress() })
+        Some(card.map_or(budget.gpu, |card| unsafe { card.GetGPUVirtualAddress() }))
     }
 
     /// The budget's words in the card's own memory ([`card_budget`]), if
@@ -8150,7 +8227,7 @@ impl HostList {
         if !self.deferred().budget_zeroed {
             return;
         }
-        let (Some(Some(card)), Some(Some((mapped, _)))) =
+        let (Some(Some(card)), Some(Some(Budget { buffer: mapped, offset, .. }))) =
             (self.card_budget.get(), self.budget.get())
         else {
             return;
@@ -8163,7 +8240,7 @@ impl HostList {
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
             )]);
-            self.list.CopyBufferRegion(mapped, 4, card, 4, 16);
+            self.list.CopyBufferRegion(mapped, offset + 4, card, 4, 16);
             self.list.ResourceBarrier(&[transition(
                 card,
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
