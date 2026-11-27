@@ -114,8 +114,19 @@ Frame rate and AMD FSR
 Where things are kept
 ---------------------
   Shader cache:  %LOCALAPPDATA%\victory-amd\cache   (safe to delete; it is rebuilt)
-  Saves:         %LOCALAPPDATA%\victory-amd\data    (keep this to keep your saves)
-These are victory-amd's own folders, so a victory-amd install shares them.
+  Saves:         %LOCALAPPDATA%\victory\data        (keep this to keep your saves)
+The shader cache is victory-amd's own folder, so a victory-amd install shares
+it. The saves are in VIctory's standard folder, where VIctory, victory-amd's
+installer and most forks keep them, so saves made with those show up in the
+Load menu. The save files themselves are in 7952987A\saves under that folder.
+
+Saves from somewhere else: close the game, then copy the 7952987A\saves folder
+from the other build's data folder into %LOCALAPPDATA%\victory\data\7952987A
+(a save in the same slot is replaced, so back that up first). Other places:
+  %LOCALAPPDATA%\victory-amd\data   VIctory-BigCheese v2.0 downloaded before
+                                    28 Nov 2026
+  %LOCALAPPDATA%\cool_fox\data      VIctory-BigCheese v1.x
+To keep using another folder, set VICTORY_DATA_DIR before starting a launcher.
 
 Every setting in the launchers is an environment variable; setting one
 before starting the file wins over the file's value.

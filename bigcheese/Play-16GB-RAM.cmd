@@ -65,10 +65,13 @@ goto :ask
 echo Game folder: %VICTORY_GAME_DIR%
 
 rem ---------------------------------------------------------------- where things are kept
-rem victory-amd's shader cache and saves: the shader translator is the same,
-rem so its cache stays good, and the saves are shared with it.
+rem The shader cache: victory-amd's own folder (the shader translator is the
+rem same, so a victory-amd cache stays good). The saves: where VIctory and most
+rem of its forks keep them (%LOCALAPPDATA%\victory\data), so saves from
+rem another build show up in the Load menu. Before 28 Nov 2026 this file kept
+rem them in %LOCALAPPDATA%\victory-amd\data; README.txt says how to move them.
 if not defined VICTORY_CACHE_DIR set "VICTORY_CACHE_DIR=%LOCALAPPDATA%\victory-amd\cache"
-if not defined VICTORY_DATA_DIR set "VICTORY_DATA_DIR=%LOCALAPPDATA%\victory-amd\data"
+if not defined VICTORY_DATA_DIR set "VICTORY_DATA_DIR=%LOCALAPPDATA%\victory\data"
 if not exist "%VICTORY_CACHE_DIR%" mkdir "%VICTORY_CACHE_DIR%"
 if not exist "%VICTORY_DATA_DIR%" mkdir "%VICTORY_DATA_DIR%"
 
