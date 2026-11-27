@@ -113,7 +113,9 @@ Frame rate and AMD FSR
   generation 4.0.2, loader 2.3.0; redistributed under AMD's licence,
   fsr\AMD-FidelityFX-SDK-LICENSE.md). FSR 4 upscaling and FSR 4 frame
   generation are on: a generated frame between each two real ones, which
-  doubles what you see, not how fast the game runs.
+  doubles what you see, not how fast the game runs. FSR 4 frame generation
+  needs an RX 9000 card; on an older card (RX 6000, RX 7000) FSR 3 frame
+  generation runs instead, by itself (the F3 panel shows FG3).
   F7 pauses frame generation and starts it again while playing (the window
   title says which); with it paused, what you see is the game's own frames,
   with no ghosting on the HUD. VICTORY_FIDELITYFX_FRAMEGEN=0 turns it off

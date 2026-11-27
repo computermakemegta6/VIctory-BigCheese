@@ -224,7 +224,14 @@ struct Api {
     query: CallFn,
     dispatch: CallFn,
     legacy_providers: Option<Providers>,
+    /// In mode 4, the built-in Frame Generation 3 providers, for a GPU
+    /// that does not offer the 4.0.2 generator (before RX 9000).
+    fallback_providers: Option<Providers>,
 }
+
+/// Mode 4 asked for, and the GPU offered no 4.0.2 generator: Frame
+/// Generation 3 runs instead (set before the first present).
+static ML_FELL_BACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct Providers {
@@ -315,6 +322,13 @@ pub(crate) fn load(dir: &Path, ml: bool) -> Result<String, String> {
             query,
             dispatch: std::mem::transmute::<*const c_void, CallFn>(find(c"ffxDispatch")?),
             legacy_providers,
+            fallback_providers: if ml {
+                find_provider(query, CREATE, null_mut(), b"3.")
+                    .zip(find_provider(query, SWAPCHAIN_CREATE, null_mut(), b"3."))
+                    .map(|(generator, swapchain)| Providers { generator, swapchain })
+            } else {
+                None
+            },
         }
     };
     let _ = API.set(api);
@@ -331,7 +345,7 @@ pub(crate) fn enabled() -> bool {
 }
 
 pub(crate) fn ml_enabled() -> bool {
-    api().is_some_and(|api| api.legacy_providers.is_none())
+    api().is_some_and(|api| api.legacy_providers.is_none()) && !ML_FELL_BACK.load(Ordering::Relaxed)
 }
 
 /// What frame generation needs of an upscaled frame (see
@@ -513,15 +527,21 @@ impl Presentation {
         }
         let providers = if let Some(legacy) = api.legacy_providers {
             legacy
-        } else {
-            let (Some(generator), Some(swapchain)) = (
-                find_provider(api.query, CREATE, device.as_raw(), b"4.0.2"),
-                find_provider(api.query, SWAPCHAIN_CREATE, device.as_raw(), b"4.0.0"),
-            ) else {
-                tracing::warn!("FidelityFX frame generation: the GPU did not offer the 4.0.2 generator and 4.0.0 proxy; off");
-                return None;
-            };
+        } else if let (Some(generator), Some(swapchain)) = (
+            find_provider(api.query, CREATE, device.as_raw(), b"4.0.2"),
+            find_provider(api.query, SWAPCHAIN_CREATE, device.as_raw(), b"4.0.0"),
+        ) {
+            ML_FELL_BACK.store(false, Ordering::Relaxed);
             Providers { generator, swapchain }
+        } else if let Some(fallback) = api.fallback_providers {
+            // FSR 4's generator is RX 9000 only: an older card gets FSR 3's,
+            // as `VICTORY_FIDELITYFX_FRAMEGEN=1` would give.
+            tracing::warn!("FidelityFX frame generation: the GPU did not offer the 4.0.2 generator (RX 9000 only); Frame Generation 3 instead");
+            ML_FELL_BACK.store(true, Ordering::Relaxed);
+            fallback
+        } else {
+            tracing::warn!("FidelityFX frame generation: the GPU did not offer the 4.0.2 generator and 4.0.0 proxy, nor Frame Generation 3; off");
+            return None;
         };
         let mut version = Version { header: header(SWAPCHAIN_VERSION), version: 4 << 22 };
         let mut provider = ProviderOverride {
@@ -547,7 +567,7 @@ impl Presentation {
         // SAFETY: the SDK returned an owned IDXGISwapChain4 reference.
         let swap_chain = unsafe { IDXGISwapChain4::from_raw(output) }.cast().ok()?;
         let proxy_provider = proxy.provider();
-        if api.legacy_providers.is_none() && proxy_provider != "4.0.0" {
+        if ml_enabled() && proxy_provider != "4.0.0" {
             tracing::warn!(provider = proxy_provider, "FidelityFX frame generation: unexpected ML proxy provider; off");
             return None;
         }

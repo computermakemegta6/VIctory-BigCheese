@@ -141,7 +141,8 @@ if not defined VICTORY_FIDELITYFX_DIR if exist "%~dp0fsr\amd_fidelityfx_upscaler
 if not defined VICTORY_FIDELITYFX_DIR if exist "%~dp0fidelityfx-sdk\amd_fidelityfx_upscaler_dx12.dll" set "VICTORY_FIDELITYFX_DIR=%~dp0fidelityfx-sdk"
 rem FSR 4 frame generation (the installer's "FSR4 + Frame Gen 4" launcher): a
 rem generated frame between each two real ones. It doubles what you see, not
-rem how fast the game runs. 1 is FSR 3's on older cards; 0 turns it off.
+rem how fast the game runs. FSR 4's needs an RX 9000 card: on an older card
+rem FSR 3's runs instead, by itself. 1 asks for FSR 3's on any card; 0 turns it off.
 if not defined VICTORY_FIDELITYFX_FRAMEGEN set "VICTORY_FIDELITYFX_FRAMEGEN=4"
 
 
