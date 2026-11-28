@@ -140,8 +140,10 @@ rem (VIctory-BigCheese) The memory stack, ported from skornuta/victory-memory-st
 rem command allocators taken anew every 30 s (they keep the most a list ever
 rem recorded), at most 512 thin/256 idle lists kept    , the lists' small budgets
 rem sharing buffers, and idle textures let go when the card is over 80% full (to
-rem 70%) so new ones have room. Set any of these to 0 before this file to turn
-rem it off.
+rem 70%) so new ones have room. To turn it off, set before this file:
+rem VICTORY_ALLOCATOR_TRIM=0, VICTORY_BUDGET_PACK=0, VICTORY_SLOT_EVICT=0,
+rem VICTORY_THIN_BACKS_MAX=1000000 and VICTORY_IDLE_LISTS=512 (0 is not off for
+rem the two list caps: 0 thin lists is raised to 4, 0 idle lists keeps none).
 if not defined VICTORY_ALLOCATOR_TRIM set "VICTORY_ALLOCATOR_TRIM=1"
 if not defined VICTORY_THIN_BACKS_MAX set "VICTORY_THIN_BACKS_MAX=512"
 if not defined VICTORY_IDLE_LISTS set "VICTORY_IDLE_LISTS=256"
