@@ -113,20 +113,34 @@ impl Pending {
         if self.left_out.is_some() {
             return;
         }
+        self.make_with(|| {
+            if is_bad_key(&self.key) {
+                SKIPPED_BAD.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(key = self.key, shaders = ?self.shaders, "not made: the driver's compiler crashed on it before");
+                return None;
+            }
+            let _building = crate::timeline::span("pipeline: build a host pipeline");
+            let began = Instant::now();
+            let made = HostPipeline::new(&self.shaders, self.graphics.as_deref());
+            super::library::note_time(&self.key, began.elapsed().as_millis() as u64);
+            made
+        });
+    }
+
+    /// A build that panics is a pipeline not made: the worker goes on, and
+    /// whoever waits for it is told (megafork af875f2, after
+    /// fxceless/victory-fork#1353).
+    fn make_with(&self, build: impl FnOnce() -> Option<HostPipeline>) {
         // Not through `OnceLock::get_or_init`: a worker the driver's compiler
         // crashed under stays inside the call for good (see [`guard_start`]),
         // and anyone else asking would wait for it forever.
         if self.made.get().is_none() {
-            let made = if is_bad_key(&self.key) {
-                SKIPPED_BAD.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(key = self.key, shaders = ?self.shaders, "not made: the driver's compiler crashed on it before");
-                None
-            } else {
-                let _building = crate::timeline::span("pipeline: build a host pipeline");
-                let began = Instant::now();
-                let made = HostPipeline::new(&self.shaders, self.graphics.as_deref());
-                super::library::note_time(&self.key, began.elapsed().as_millis() as u64);
-                made
+            let made = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+                Ok(pipeline) => pipeline,
+                Err(_) => {
+                    tracing::warn!(key = self.key, shaders = ?self.shaders, "host pipeline build panicked: not made");
+                    None
+                }
             };
             let _ = self.made.set(made);
         }
@@ -793,6 +807,23 @@ fn drained() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panicking_pipeline_is_refused_and_the_worker_continues() {
+        let failed = Arc::new(Pending::new(Vec::new(), None));
+        let next = Arc::new(Pending::new(Vec::new(), None));
+        let failed_job = failed.clone();
+        let next_job = next.clone();
+        std::thread::spawn(move || {
+            failed_job.make_with(|| panic!("synthetic pipeline build panic"));
+            next_job.make_with(|| None);
+        })
+        .join()
+        .expect("the pipeline worker should survive");
+        assert!(matches!(failed.made.get(), Some(None)));
+        assert!(matches!(next.made.get(), Some(None)));
+        failed.make_with(|| panic!("a completed pipeline should not be rebuilt"));
+    }
 
     #[test]
     fn worker_count_follows_the_processors_and_the_switch() {

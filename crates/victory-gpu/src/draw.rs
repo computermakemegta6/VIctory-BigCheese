@@ -1002,6 +1002,30 @@ const LIVE_LOOKS: u8 = 120;
 /// memory is looked at again, each counted from the look before.
 const RECHECK_FRAMES: [u64; 5] = [4, 12, 40, 120, 400];
 
+/// Frames between looks at an uploaded texture picked by index once
+/// [`RECHECK_FRAMES`] is through (`VICTORY_HEAP_RECHECK_EVERY=<frames>`; unset
+/// or 0: it is not looked at again, as before). The title streams a
+/// texture's memory in and rewrites it long after its view was written:
+/// what changes after the schedule's last look stays as it was on the card
+/// for the rest of the run (skin that turns black or red). Each look reads
+/// 48 KiB; only a changed texture is uploaded again. (From fxceless/victory-fork
+/// e4245f3, after RyanCase94's 920423a9.)
+fn recheck_every() -> u64 {
+    static EVERY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| {
+        let every = std::env::var("VICTORY_HEAP_RECHECK_EVERY")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        if every > 0 {
+            tracing::info!(
+                "uploaded textures picked by index are looked at again every {every} frames (VICTORY_HEAP_RECHECK_EVERY)"
+            );
+        }
+        every
+    })
+}
+
 /// Looks at uploaded textures picked by index that found the memory as it
 /// was, and that found it changed (uploaded again), since the start.
 pub(crate) static HEAP_TEXTURES_RECHECKED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -2736,7 +2760,22 @@ impl State {
                             uploaded,
                             false,
                         ),
-                        None => host.texture_slot_done(index, write, None),
+                        // The schedule is over: looked at again every so many
+                        // frames for as long as the slot shows it
+                        // (`recheck_every`), or never again.
+                        None => match recheck_every() {
+                            0 => host.texture_slot_done(index, write, None),
+                            every => host.texture_slot_recheck(
+                                index,
+                                write,
+                                frame + every,
+                                (at, len),
+                                print,
+                                looks,
+                                uploaded,
+                                false,
+                            ),
+                        },
                     }
                     continue;
                 }
