@@ -101,6 +101,11 @@ if not defined VICTORY_MAP_THREADS set "VICTORY_MAP_THREADS=1"
 if not defined VICTORY_TITLE_PRIORITIES set "VICTORY_TITLE_PRIORITIES=0"
 if not defined VICTORY_CARD_AWAKE set "VICTORY_CARD_AWAKE=1"
 if not defined VICTORY_SHOW_AFTER set "VICTORY_SHOW_AFTER=1"
+rem Fewer black textures (RAZDA4A-XEN settings): a slot keeps showing its old
+rem texture until the new one is uploaded, and a texture whose memory goes
+rem away is kept 10 s (not 3 s) before it is dropped.
+if not defined VICTORY_KEEP_SHOWN set "VICTORY_KEEP_SHOWN=2"
+if not defined VICTORY_TEXTURE_AWAY_MS set "VICTORY_TEXTURE_AWAY_MS=10000"
 if not defined VICTORY_AMBIENT set "VICTORY_AMBIENT=0.8"
 if not defined VICTORY_AMBIENT_REFLECT set "VICTORY_AMBIENT_REFLECT=1.5,0.35"
 if not defined VICTORY_D3D12_DRED set "VICTORY_D3D12_DRED=light"
