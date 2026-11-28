@@ -1491,7 +1491,7 @@ type Prelude = (ID3D12CommandAllocator, ID3D12GraphicsCommandList);
 type ListPrelude = (Option<Mutex<(ID3D12CommandAllocator, u64)>>, ID3D12GraphicsCommandList);
 
 /// Whether host lists' indirect-work budgets in memory the CPU maps share
-/// buffers (`VICTORY_BUDGET_PACK=1`; off by default; from the memory
+/// buffers (on by default; `VICTORY_BUDGET_PACK=0` turns it off; from the memory
 /// stack's "budget pack"). A budget is 256 bytes; each list made a buffer
 /// of its own for it, and a buffer takes 64 KiB. With the switch a budget is
 /// a 256-byte slot of a 64 KiB buffer of [`BUDGET_SLABS`], given back behind
@@ -1500,7 +1500,7 @@ type ListPrelude = (Option<Mutex<(ID3D12CommandAllocator, u64)>>, ID3D12Graphics
 /// its state with barriers.
 fn budget_pack() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_BUDGET_PACK").is_some_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var_os("VICTORY_BUDGET_PACK").is_none_or(|v| v != "0"))
 }
 
 const BUDGET_SLOT: u64 = 256;
@@ -1573,7 +1573,7 @@ impl Budget {
 }
 
 /// Whether host command allocators are taken anew now and then
-/// (`VICTORY_ALLOCATOR_TRIM=1`; off by default; from the memory stack's
+/// (on by default; `VICTORY_ALLOCATOR_TRIM=0` turns it off; from the memory stack's
 /// "allocator trim"). A D3D12 command allocator never gives back the memory
 /// of the most its list ever recorded into it: a list that once took a
 /// loading frame's commands keeps that for the run. With the switch a list's
@@ -1584,7 +1584,7 @@ impl Budget {
 pub(crate) fn allocator_trim() -> Option<u64> {
     static S: OnceLock<Option<u64>> = OnceLock::new();
     *S.get_or_init(|| {
-        std::env::var_os("VICTORY_ALLOCATOR_TRIM").is_some_and(|v| v == "1").then(|| {
+        std::env::var_os("VICTORY_ALLOCATOR_TRIM").is_none_or(|v| v != "0").then(|| {
             std::env::var("VICTORY_ALLOCATOR_TRIM_S")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())

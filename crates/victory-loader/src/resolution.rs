@@ -490,6 +490,8 @@ pub unsafe fn apply_asked(base: usize, size: usize) {
             Patched::Done => tracing::info!(site = %offset, what = site.what, value, "resolution: patched"),
             Patched::Differs => tracing::warn!(site = %offset, what = site.what, "resolution: not patched, the title's bytes there are not the ones expected (another build?)"),
             Patched::Failed(why) => tracing::warn!(site = %offset, what = site.what, why, "resolution: not patched"),
+            // Only the frame rate's all-or-nothing patching holds sites back.
+            Patched::Withheld => {}
         }
         println!("resolution: {} ({value}) at title+{offset}: {done:?}", site.what);
     }

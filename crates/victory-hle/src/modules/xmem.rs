@@ -336,6 +336,34 @@ pub extern "system" fn XMemAllocDefault(size: usize, attributes: u64) -> *mut c_
             PAGE_READWRITE,
         );
     }
+    // A reservation starts on 64 KiB: enough for every alignment up to that.
+    if size >= own_least() && (attributes >> ALIGNMENT_SHIFT & 0x1f) <= 16 {
+        if section_sizes().is_some_and(|(least, most)| (least..=most).contains(&size)) {
+            let at = own_view(size);
+            if !at.is_null() {
+                tracing::info!(
+                    kb = size >> 10,
+                    at = format_args!("{at:p}"),
+                    attributes = format_args!("{attributes:#x}"),
+                    "XMemAllocDefault: a block of its own, a view of a section (VICTORY_XMEM_SECTION_KB)"
+                );
+                return at;
+            }
+        }
+        let at = XMemVirtualAlloc(std::ptr::null_mut(), size, MEM_RESERVE | MEM_COMMIT, GRAPHICS, PAGE_READWRITE);
+        if !at.is_null() {
+            OWN.lock().unwrap_or_else(|e| e.into_inner()).insert(at as usize);
+            if size >= 8 << 20 {
+                tracing::info!(
+                    mb = size >> 20,
+                    at = format_args!("{at:p}"),
+                    attributes = format_args!("{attributes:#x}"),
+                    "XMemAllocDefault: a block of its own, write-watched"
+                );
+            }
+            return at;
+        }
+    }
     let Some(layout) = layout(size, attributes) else {
         return std::ptr::null_mut();
     };
@@ -360,6 +388,103 @@ pub extern "system" fn XMemAllocDefault(size: usize, attributes: u64) -> *mut c_
     }
 }
 
+/// From this size on a block of [`XMemAllocDefault`] is a reservation of its
+/// own, write-watched like the title's other memory, and not a piece of the
+/// host heap (`VICTORY_XMEM_OWN_KB`, 1024; 0: never, as before). From Neptune.
+///
+/// Host heap memory has no write watch, so the GPU side cannot tell what the
+/// title wrote in a buffer there and copies it whole at every refresh: the
+/// AMD upscaler's buffer of 21 MB (Series S) was copied twice, sent up to the
+/// card and fetched back whole in every frame (41 MB a frame, Neptune's runs
+/// 30 and 32).
+fn own_least() -> usize {
+    static LEAST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LEAST.get_or_init(|| {
+        let kib = std::env::var("VICTORY_XMEM_OWN_KB").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1024);
+        if kib == 0 { usize::MAX } else { kib << 10 }
+    })
+}
+
+/// The blocks of [`XMemAllocDefault`] that are reservations of their own.
+static OWN: Mutex<std::collections::BTreeSet<usize>> = Mutex::new(std::collections::BTreeSet::new());
+
+/// The sizes, in bytes, of the blocks of [`XMemAllocDefault`] that are a view
+/// of a pagefile section of their own instead of private memory
+/// (`VICTORY_XMEM_SECTION_KB=<least>[-<most>]`, in KiB; not given or 0:
+/// none). From Neptune.
+///
+/// What shaders write into a host copy is put back into title memory. Into
+/// private memory that goes through the title's own address, which the
+/// kernel's write watch then reports as written by the title: the next
+/// refresh reads every such page and compares it with the copy only to find
+/// them alike. The AMD upscaler's buffer of 21 MB (Series S) is written whole
+/// by shaders in every frame and never by the title's CPU: 21 of the 25 MB a
+/// frame that refreshes looked at for nothing (Neptune's runs 46 and 57; +3.6%
+/// frames). A view of a section has a second view of ours beside it, as the
+/// title's page pool has: what shaders wrote is put in through that one, the
+/// title's view stays guarded, and nothing is reported or looked at again.
+///
+/// Only for blocks the title's CPU rarely writes: every write of the title
+/// to a guarded 64 KiB block of a view is a fault taken once per refresh.
+fn section_sizes() -> Option<(usize, usize)> {
+    static SIZES: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *SIZES.get_or_init(|| parse_section_sizes(&std::env::var("VICTORY_XMEM_SECTION_KB").ok()?))
+}
+
+/// `<least>[-<most>]` in KiB, as bytes.
+fn parse_section_sizes(text: &str) -> Option<(usize, usize)> {
+    let (least, most) = match text.trim().split_once('-') {
+        Some((least, most)) => (least.trim().parse::<usize>().ok()?, most.trim().parse::<usize>().ok()?),
+        None => (text.trim().parse::<usize>().ok()?, usize::MAX >> 10),
+    };
+    (least != 0 && least <= most).then_some((least << 10, most.saturating_mul(1 << 10)))
+}
+
+/// The blocks of [`XMemAllocDefault`] that are views of sections of their
+/// own ([`section_sizes`]): the section's handle and the bytes mapped.
+static OWN_VIEWS: Mutex<std::collections::BTreeMap<usize, (usize, usize)>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// A block of `size` bytes as the one view of a new section, where the
+/// title's graphics memory may lie; null if the host refuses.
+fn own_view(size: usize) -> *mut c_void {
+    // Whole 64 KiB blocks: the GPU side guards a view by those.
+    let len = size.next_multiple_of(1 << 16);
+    // SAFETY: plain section creation; committed, as only such a section can
+    // be opened by the GPU side for its own view.
+    let handle = unsafe {
+        CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), PAGE_READWRITE | SEC_COMMIT, (len as u64 >> 32) as u32, len as u32, std::ptr::null())
+    };
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    let (lowest, highest) = address_range(GRAPHICS);
+    let mut requirements = MEM_ADDRESS_REQUIREMENTS {
+        LowestStartingAddress: lowest as *mut c_void,
+        HighestEndingAddress: highest as *mut c_void,
+        Alignment: 0,
+    };
+    let mut parameter = MEM_EXTENDED_PARAMETER::default();
+    parameter.Anonymous1._bitfield = MemExtendedParameterAddressRequirements as u64;
+    parameter.Anonymous2.Pointer = (&raw mut requirements).cast();
+    // A change of what title memory shows, as the page pool's mappings are.
+    let _changing = victory_gpu::title_memory_remapping();
+    // SAFETY: a view of our own section at an address of the system's
+    // choice; the parameter points at `requirements`, which outlives the call.
+    let view = unsafe { MapViewOfFile3(handle, GetCurrentProcess(), std::ptr::null(), 0, len, 0, PAGE_READWRITE, &mut parameter, 1) };
+    if view.Value.is_null() {
+        tracing::warn!(size, error = %std::io::Error::last_os_error(), "XMemAllocDefault: no view of a section of its own");
+        // SAFETY: our handle.
+        unsafe { CloseHandle(handle) };
+        return std::ptr::null_mut();
+    }
+    let at = view.Value as usize;
+    victory_gpu::title_memory_section(handle as usize, len as u64, true);
+    victory_gpu::title_memory_remapped(at, len);
+    victory_gpu::title_memory_view(at, len, handle as usize, 0);
+    OWN_VIEWS.lock().unwrap_or_else(|e| e.into_inner()).insert(at, (handle as usize, len));
+    view.Value
+}
+
 /// Frees what [`XMemAllocDefault`] returned, given the same attributes.
 pub extern "system" fn XMemFreeDefault(address: *mut c_void, attributes: u64) {
     if address.is_null() {
@@ -368,6 +493,28 @@ pub extern "system" fn XMemFreeDefault(address: *mut c_void, attributes: u64) {
     // SAFETY: the address came from `XMemAlloc` with these attributes: a
     // whole reservation, or a header-prefixed block.
     unsafe {
+        let view = OWN_VIEWS.lock().unwrap_or_else(|e| e.into_inner()).remove(&(address as usize));
+        if let Some((handle, len)) = view {
+            // As the title's own free of memory, then as the page pool's
+            // unmapping of a view: what the GPU side noted goes first.
+            victory_gpu::title_memory_freed(address as usize, len);
+            {
+                let _changing = victory_gpu::title_memory_remapping();
+                victory_gpu::title_memory_unmapping(address as usize, len);
+                UnmapViewOfFile2(GetCurrentProcess(), MEMORY_MAPPED_VIEW_ADDRESS { Value: address }, 0);
+            }
+            victory_gpu::title_memory_section_gone(handle);
+            CloseHandle(handle as HANDLE);
+            return;
+        }
+        if OWN.lock().unwrap_or_else(|e| e.into_inner()).remove(&(address as usize)) {
+            // What the GPU side noted of the memory goes first, as with the
+            // title's own `VirtualFree`: the address may be other memory's
+            // the moment it is free.
+            victory_gpu::title_memory_freed(address as usize, 0);
+            VirtualFree(address, 0, MEM_RELEASE);
+            return;
+        }
         if attributes & ALLOC_32BIT != 0 {
             VirtualFree(address, 0, MEM_RELEASE);
             return;
@@ -2047,6 +2194,33 @@ pub(crate) fn module() -> HleModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `VICTORY_XMEM_SECTION_KB`: a range, a lower bound alone, or nothing.
+    #[test]
+    fn section_sizes_parse() {
+        assert_eq!(parse_section_sizes("20000-21000"), Some((20000 << 10, 21000 << 10)));
+        assert_eq!(parse_section_sizes(" 512 "), Some((512 << 10, (usize::MAX >> 10).saturating_mul(1 << 10))));
+        assert_eq!(parse_section_sizes("0"), None);
+        assert_eq!(parse_section_sizes("30-20"), None);
+        assert_eq!(parse_section_sizes("x"), None);
+    }
+
+    /// A big block of `XMemAllocDefault` is a reservation of its own, freed
+    /// as one; a small one comes from the host heap.
+    #[test]
+    fn big_blocks_are_their_own() {
+        let big = XMemAllocDefault(4 << 20, 0);
+        assert!(!big.is_null());
+        assert!(OWN.lock().unwrap().contains(&(big as usize)));
+        // SAFETY: the block is 4 MiB, ours.
+        unsafe { std::ptr::write_bytes(big.cast::<u8>(), 0xab, 4 << 20) };
+        XMemFreeDefault(big, 0);
+        assert!(!OWN.lock().unwrap().contains(&(big as usize)));
+        let small = XMemAllocDefault(4096, 0);
+        assert!(!small.is_null());
+        assert!(!OWN.lock().unwrap().contains(&(small as usize)));
+        XMemFreeDefault(small, 0);
+    }
 
     fn query(address: *const c_void) -> BasicInformation {
         // SAFETY: plain data; zero is a valid value.

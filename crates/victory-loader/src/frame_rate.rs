@@ -150,6 +150,47 @@ pub const LIMITER_ON: usize = 0x7453ec9;
 /// 50 ms): +0 and +4 times, +0xc the step in seconds, +0x10 in milliseconds.
 pub const TIMERS: [usize; 7] = [0xa943788, 0x856c6b4, 0xabbef40, 0xa958358, 0xa958380, 0x74fa558, 0xa943768];
 
+/// (Neptune) The timers' shortest step, `1 / rate` in seconds (single precision), made at
+/// +0x22435de and +0x2241190 from +0x2241fd0's rate.
+pub const MIN_STEP: usize = 0x6849844;
+
+/// (Neptune) While the title plays a video (`VICTORY_FRAME_INTERVAL_VIDEO`, our clock at the
+/// title's own 33.3 ms then): the title's frame time (+0x98f84ac) and the timers' shortest
+/// step ([`MIN_STEP`]) are given the values its own rate (30) makes, and when the video has
+/// ended the patched `rate`'s again. The patched reads run only where the title applies its
+/// settings, not every frame, so the values they made are what the title goes by meanwhile
+/// (its limiter, what scripts are told, the step). Each is written only if it holds what the
+/// other state made (compared and swapped): anything else, written by the title meanwhile, is
+/// left as it is and said once.
+///
+/// # Safety
+/// `base` is the title's image, mapped for as long as the title runs.
+#[cfg(windows)]
+pub unsafe fn video_values(base: usize, rate: u32, video: bool) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let own = 30;
+    let (from, to) = if video { (rate, own) } else { (own, rate) };
+    let step = |r: u32| (1.0f32 / (if r == 0 { 1000 } else { r }) as f32).to_bits();
+    for (what, at, old, new) in [
+        ("frame time", FRAME_US, title_frame_us(from), title_frame_us(to)),
+        ("shortest step", MIN_STEP, step(from), step(to)),
+    ] {
+        // SAFETY: a 4-byte aligned word of the title's data (its offsets are), mapped while
+        // the title runs; the title reads it as a plain word.
+        let word = unsafe { AtomicU32::from_ptr((base + at) as *mut u32) };
+        match word.compare_exchange(old, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => tracing::info!(what, from = old, to = new, video, "frame rate: the title's value changed for the video's interval"),
+            Err(there) => tracing::warn!(
+                what,
+                there = format_args!("{there:#x}"),
+                expected = format_args!("{old:#x}"),
+                video,
+                "frame rate: the title's value is not the one expected, left as it is"
+            ),
+        }
+    }
+}
+
 /// What goes at a site of `kind` for `rate`.
 pub fn replacement(kind: Kind, rate: u32) -> Vec<u8> {
     match kind {
@@ -173,6 +214,46 @@ pub enum Patched {
     /// Its bytes are not the ones expected: left alone.
     Differs,
     Failed(&'static str),
+    /// (Neptune, [`apply_all`]) Its bytes are the ones expected, but another
+    /// site's are not: left alone, so the title keeps its own rate whole.
+    Withheld,
+}
+
+/// (Neptune) As [`apply`], but all or nothing: every site's bytes are
+/// compared first, and if any site is outside the image or differs, none is
+/// patched (the title keeps its 30 everywhere). A half-patched title (its
+/// frame time at the new rate, its simulation step at 1/30 s, or the other
+/// way round) under a faster clock of ours runs game time at the wrong speed.
+///
+/// # Safety
+/// As [`apply`].
+#[cfg(windows)]
+pub unsafe fn apply_all(base: usize, size: usize, rate: u32, sites: &[Site]) -> Vec<Patched> {
+    let looked: Vec<Patched> = sites
+        .iter()
+        .map(|site| {
+            let len = replacement(site.kind, rate).len();
+            if site.bytes.len() < len || site.at.checked_add(site.bytes.len()).is_none_or(|end| end > size) {
+                return Patched::Failed("outside the image");
+            }
+            // SAFETY: inside the mapped image (checked above).
+            let there = unsafe { std::slice::from_raw_parts((base + site.at) as *const u8, site.bytes.len()) };
+            if there == site.bytes { Patched::Done } else { Patched::Differs }
+        })
+        .collect();
+    if looked.iter().all(|d| *d == Patched::Done) {
+        // SAFETY: as the caller promised.
+        return unsafe { apply(base, size, rate, sites) };
+    }
+    for (site, done) in sites.iter().zip(&looked) {
+        let offset = format_args!("{:#x}", site.at);
+        match done {
+            Patched::Failed(why) => tracing::warn!(site = %offset, why, "frame rate: not patched"),
+            Patched::Differs => tracing::warn!(site = %offset, "frame rate: not patched, the title's bytes there are not the ones expected (another build?)"),
+            _ => tracing::warn!(site = %offset, "frame rate: not patched, as another read of the setting could not be"),
+        }
+    }
+    looked.into_iter().map(|d| if d == Patched::Done { Patched::Withheld } else { d }).collect()
 }
 
 /// Makes each site of `sites` in the image of `size` bytes at `base` load
@@ -218,6 +299,7 @@ pub unsafe fn apply(base: usize, size: usize, rate: u32, sites: &[Site]) -> Vec<
                 Patched::Done => tracing::info!(site = %offset, kind = ?site.kind, rate, "frame rate: the title's read of its frame rate setting patched (VICTORY_FRAME_INTERVAL_MS)"),
                 Patched::Differs => tracing::warn!(site = %offset, "frame rate: not patched, the title's bytes there are not the ones expected (another build?)"),
                 Patched::Failed(why) => tracing::warn!(site = %offset, why, "frame rate: not patched"),
+                Patched::Withheld => {}
             }
             done
         })

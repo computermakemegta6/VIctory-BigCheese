@@ -123,6 +123,23 @@ pub(crate) fn allow_staging_growth(bake: bool) -> bool {
     has_growth_reserve(sample_commit(now), bake)
 }
 
+/// Whether the PC's memory is small enough that it runs out before the
+/// card's (`VICTORY_SMALL_HOST=1`/`0`; unset: 24 GiB of RAM or less): spare
+/// upload memory is then kept small (`crate::host::send`). From Neptune
+/// (`residency::small_host_ram`), measured there on 16 GB PCs.
+pub(crate) fn small_host_ram() -> bool {
+    static SMALL: OnceLock<bool> = OnceLock::new();
+    *SMALL.get_or_init(|| {
+        let small = match std::env::var("VICTORY_SMALL_HOST").ok().as_deref().map(str::trim) {
+            Some("1") => true,
+            Some("0") => false,
+            _ => memory_status().is_some_and(|s| s.ullTotalPhys <= 24 * GIB),
+        };
+        tracing::info!(small, "small host memory (VICTORY_SMALL_HOST): spare upload memory kept small");
+        small
+    })
+}
+
 /// Whether this host has `<= 32 GiB` physical RAM (or `VICTORY_32GB_TUNE=1`),
 /// independent of `VICTORY_RESIDENCY=1`. Used to enable zero-thrash pool
 /// reclamation and shadow/slab caps without throttling texture streaming.

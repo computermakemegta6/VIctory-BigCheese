@@ -119,8 +119,26 @@ unsafe impl Send for Memory {}
 static SPARE: Mutex<Vec<Memory>> = Mutex::new(Vec::new());
 
 /// At most this much is kept (of the card's memory, with [`on_card`]).
+/// On a small host ([`crate::residency::small_host_ram`]) 128 MB, since there
+/// the PC's memory runs out first (from Neptune).
 fn kept() -> u64 {
-    if on_card() { 256 << 20 } else { 768 << 20 }
+    if on_card() {
+        256 << 20
+    } else if crate::residency::small_host_ram() {
+        128 << 20
+    } else {
+        768 << 20
+    }
+}
+
+/// The size of new send memory for `size` bytes: by doubles from 8 MiB, so
+/// that the next send of about this size finds it (what submissions send
+/// differs from frame to frame). On a small host (from Neptune) from 1 MiB,
+/// since some 25 submissions a frame send 20-30 MB between them, and past
+/// 8 MiB by 4 MiB steps: doubling made 32 MB of a 17 MB ask.
+fn rounded(size: u64, small: bool) -> u64 {
+    let size = size.max(if small { 1 << 20 } else { 8 << 20 });
+    if small && size > 8 << 20 { size.next_multiple_of(4 << 20) } else { size.next_power_of_two() }
 }
 
 /// Whether the memory lies in the card's memory, written by the CPU through
@@ -143,9 +161,7 @@ fn memory(host: &Host, size: u64) -> Option<Memory> {
             return Some(spare.swap_remove(i));
         }
     }
-    // By doubles, so that the next of about this size finds it: what
-    // submissions send differs from frame to frame.
-    let size = size.max(8 << 20).next_power_of_two();
+    let size = rounded(size, crate::residency::small_host_ram());
     let mapped = if on_card() { host.mapped_card_buffer(size, false) } else { None };
     let (buffer, data) = match mapped {
         Some(made) => made,
@@ -363,6 +379,19 @@ impl Own {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Send memory on a small host is made closer to the size asked for.
+    #[test]
+    fn send_memory_sizes() {
+        const MIB: u64 = 1 << 20;
+        assert_eq!(rounded(100, false), 8 * MIB);
+        assert_eq!(rounded(17 * MIB, false), 32 * MIB);
+        assert_eq!(rounded(100, true), MIB);
+        assert_eq!(rounded(3 * MIB, true), 4 * MIB);
+        assert_eq!(rounded(8 * MIB, true), 8 * MIB);
+        assert_eq!(rounded(17 * MIB, true), 20 * MIB);
+        assert_eq!(rounded(20 * MIB, true), 20 * MIB);
+    }
 
     // Reference layout from the old multi-pass planner.
     fn reference<'a>(

@@ -161,11 +161,22 @@ pub fn run(
             println!("  missing      {}!{}", m.dll, m.symbol);
         }
     };
+    // (Neptune) The title's calls into its video player go through us, then on to it
+    // unchanged (`VICTORY_FRAME_INTERVAL_VIDEO`, with `VICTORY_FRAME_INTERVAL_MS`): our frame
+    // clock gives a video the title's own interval. Without them the resolver is the one
+    // above, unchanged.
+    #[cfg(windows)]
+    let bink = victory_hle::modules::bink::Watch { inner: &with_dlls };
+    #[cfg(windows)]
+    let binder: &dyn victory_loader::ImportResolver =
+        if victory_hle::modules::bink::on() { &bink } else { &with_dlls };
+    #[cfg(not(windows))]
+    let binder: &dyn victory_loader::ImportResolver = &with_dlls;
     for (name, dll) in &dlls {
-        show(name, dll.bind_imports(&with_dlls, policy)?);
+        show(name, dll.bind_imports(binder, policy)?);
     }
     let exe_name = exe.file_name().unwrap_or_default().to_string_lossy();
-    show(&exe_name, image.bind_imports(&with_dlls, policy)?);
+    show(&exe_name, image.bind_imports(binder, policy)?);
     if execute {
         let size = image.info().size_of_image as usize;
         // SAFETY: the image stays mapped, and nothing of it has run yet.
@@ -190,21 +201,53 @@ pub fn run(
     // overrides it; `off` leaves the title alone).
     #[cfg(windows)]
     if execute && let Some(ms) = victory_loader::frame_rate::asked_interval_ms() {
-        use victory_loader::frame_rate::{Patched, SITES, apply, title_interval_us, title_rate};
+        // (Neptune) Our clock takes the interval only if every read of the title's
+        // frame rate was patched (all or none), or `VICTORY_TITLE_FPS=off` asked for the
+        // title to be left alone: a title kept at 30 under a faster clock runs game time
+        // at twice the wall clock.
+        use victory_loader::frame_rate::{Patched, SITES, apply_all, title_interval_us, title_rate};
         let asked = std::env::var("VICTORY_TITLE_FPS").ok();
+        let left_alone = asked.as_deref().map(str::trim) == Some("off");
         match title_rate(ms, asked.as_deref()) {
             Some(rate) => {
                 let size = image.info().size_of_image as usize;
                 // SAFETY: the image stays mapped and nothing of it has run yet.
-                let done = unsafe { apply(image.base(), size, rate, &SITES) };
+                let done = unsafe { apply_all(image.base(), size, rate, &SITES) };
                 let patched = done.iter().filter(|d| **d == Patched::Done).count();
+                let all = patched == SITES.len();
+                victory_gpu::frame::allow_interval(all);
+                // While a video plays (`VICTORY_FRAME_INTERVAL_VIDEO`): the title's own
+                // frame time and step meanwhile, the patched ones after.
+                if all {
+                    let base = image.base();
+                    victory_gpu::frame::on_video(Box::new(move |video| {
+                        // SAFETY: the title's image, mapped while it runs.
+                        unsafe { victory_loader::frame_rate::video_values(base, rate, video) }
+                    }));
+                }
                 println!(
                     "frame rate: our clock {ms} ms; the title's rate {rate} ({patched} of {} reads of its setting patched; it asks for {} us at 60 Hz)",
                     SITES.len(),
                     title_interval_us(rate, false)
                 );
+                if !all {
+                    println!(
+                        "frame rate: REFUSED: not every one of the {} reads of the title's frame rate matched ({done:?}), so none was patched; our clock keeps the title's interval, VICTORY_FRAME_INTERVAL_MS={ms} is ignored (VICTORY_TITLE_FPS=off forces it, game time may then run fast)",
+                        SITES.len()
+                    );
+                }
             }
-            None => println!("frame rate: our clock {ms} ms; the title's own rate (30) left as it is"),
+            None if left_alone => {
+                victory_gpu::frame::allow_interval(true);
+                println!("frame rate: our clock {ms} ms; the title's own rate (30) left as it is (VICTORY_TITLE_FPS=off: game time may run fast)");
+            }
+            None => {
+                victory_gpu::frame::allow_interval(false);
+                println!(
+                    "frame rate: REFUSED: VICTORY_TITLE_FPS={:?} is not a rate from 0 to 1000 or `off`; nothing patched, VICTORY_FRAME_INTERVAL_MS={ms} is ignored",
+                    asked.as_deref().unwrap_or_default()
+                );
+            }
         }
     }
     // The output size and render scale (VICTORY_OUTPUT, VICTORY_RENDER_SCALE,

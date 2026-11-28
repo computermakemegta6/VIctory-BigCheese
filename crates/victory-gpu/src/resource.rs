@@ -2340,7 +2340,7 @@ const FAST_BACK_MS: u64 = 2_000;
 #[cfg(windows)]
 const PROTECT_MS: u64 = 60_000;
 
-/// `VICTORY_SLOT_EVICT=1` (off by default; from the memory stack's "slot
+/// On by default (`VICTORY_SLOT_EVICT=0` turns it off; from the memory stack's "slot
 /// eviction", patches 0006 and 0007): when the card's use passes
 /// `VICTORY_SLOT_EVICT_PERCENT` of its budget (85), idle host copies of
 /// textures the title fills are let go although title slots a draw reads
@@ -2352,7 +2352,7 @@ fn slot_evict_settings() -> Option<(u64, u64, u64)> {
     static S: std::sync::OnceLock<Option<(u64, u64, u64)>> = std::sync::OnceLock::new();
     *S.get_or_init(|| {
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<u64>().ok());
-        (std::env::var("VICTORY_SLOT_EVICT").is_ok_and(|v| v == "1")).then(|| {
+        std::env::var("VICTORY_SLOT_EVICT").ok().is_none_or(|v| v.trim() != "0").then(|| {
             let high = num("VICTORY_SLOT_EVICT_PERCENT").unwrap_or(85).clamp(50, 97);
             let low = num("VICTORY_SLOT_EVICT_LOW_PERCENT").unwrap_or(high.saturating_sub(10)).clamp(40, high - 1);
             (high, low, num("VICTORY_SLOT_EVICT_MB").unwrap_or(256).clamp(16, 2048) << 20)

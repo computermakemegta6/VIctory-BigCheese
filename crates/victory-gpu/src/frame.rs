@@ -31,12 +31,35 @@ const ORIGIN: u32 = 0;
 const TOKEN_ON_TIMEOUT: u32 = 2;
 const SIXTIETH: Duration = Duration::from_micros(16_667);
 
+/// Whether the loader let our interval apply ([`allow_interval`]): 0 not
+/// said, 1 allowed, 2 refused. (From Neptune.)
+static ALLOWED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Said by the loader before the title runs: whether our interval
+/// (`VICTORY_FRAME_INTERVAL_MS`) may apply. It may only when every read of
+/// the title's frame-rate setting was patched to the matching rate, or the
+/// user asked for the title to be left alone (`VICTORY_TITLE_FPS=off`, at
+/// their own risk). Otherwise the title keeps its 30 (and its 1/30 s
+/// simulation step) while our clock ticks faster: game time ran at twice
+/// the wall clock. Unsaid, our interval does not apply either.
+pub fn allow_interval(allowed: bool) {
+    ALLOWED.store(if allowed { 1 } else { 2 }, Ordering::Relaxed);
+}
+
 /// `VICTORY_FRAME_INTERVAL_MS`: the interval asked for in place of the
-/// title's (zero: no wait). Read once.
+/// title's (zero: no wait), if the loader allowed it ([`allow_interval`]).
+/// Read once.
 fn asked() -> Option<Duration> {
     static ASKED: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
     *ASKED.get_or_init(|| {
         let spec = std::env::var("VICTORY_FRAME_INTERVAL_MS").ok()?;
+        if ALLOWED.load(Ordering::Relaxed) != 1 {
+            tracing::warn!(
+                spec,
+                "VICTORY_FRAME_INTERVAL_MS refused: not every read of the title's frame rate was patched (VICTORY_TITLE_FPS=off to force it); the title's interval kept"
+            );
+            return None;
+        }
         let ms = parse_ms(&spec);
         match ms {
             Some(d) => tracing::info!(interval = ?d, "frame interval of ours in place of the title's (VICTORY_FRAME_INTERVAL_MS)"),
@@ -58,6 +81,168 @@ struct Clock {
     interval: Duration,
     /// The tick number at `start` (ticks go on across interval changes).
     first: u64,
+    /// The interval set (ours or the title's): `interval` is this but while
+    /// the title plays a video ([`video_interval`]).
+    base: Duration,
+}
+
+/// `VICTORY_FRAME_INTERVAL_VIDEO`: the interval our clock ticks at while the
+/// title plays a Bink video, in place of `VICTORY_FRAME_INTERVAL_MS`'s (unset
+/// or `1`: the title's own 33.333 ms; `0`: none, the patched interval always;
+/// another number: those milliseconds). Only where our interval applies
+/// ([`asked`]) and is shorter. (From Neptune.)
+///
+/// Why: the intro video was made for one decode a 33 ms frame. At 60 frames a
+/// second the title draws it every 16.7 ms, and consecutive presents showed
+/// two pictures in turn, seen as strobing; at the title's own 30 it does not.
+/// A video playing is told by the title's calls into `Bink2Scarlett.dll`
+/// ([`bink_called`], `victory_hle`'s stand-in in front of them): one of its
+/// per-frame calls in the last [`VIDEO_HOLD`].
+fn video_interval() -> Option<Duration> {
+    static AT: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| {
+        let spec = std::env::var("VICTORY_FRAME_INTERVAL_VIDEO").ok();
+        match spec.as_deref().map(str::trim) {
+            None | Some("1") => Some(Duration::from_micros(33_333)),
+            Some("0") => None,
+            Some(ms) => match parse_ms(ms) {
+                Some(d) if !d.is_zero() => Some(d),
+                _ => {
+                    tracing::warn!(spec = ms, "VICTORY_FRAME_INTERVAL_VIDEO: expected 0, 1 or milliseconds; the title's 33.333 ms taken");
+                    Some(Duration::from_micros(33_333))
+                }
+            },
+        }
+    })
+}
+
+/// How long after the title's last per-frame call into Bink a video counts as playing.
+const VIDEO_HOLD: Duration = Duration::from_millis(150);
+
+/// The title's calls into Bink that the stand-in sees ([`bink_called`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Bink {
+    /// `BinkOpenWithOptions`.
+    Open,
+    /// `BinkClose`.
+    Close,
+    /// `BinkDoFrame`, `BinkDoFrameAsyncMulti`: a picture decoded (or begun).
+    Decode,
+    /// `BinkNextFrame`: on to the next picture.
+    Next,
+}
+
+/// Microseconds since `epoch_us`'s start of the last per-frame Bink call (0:
+/// none yet), and videos open (opened less closed).
+static BINK_LAST: AtomicU64 = AtomicU64::new(0);
+static BINK_OPEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// The title's per-frame Bink calls (decodes, nexts) in the whole run, said
+/// when the clock goes back from the video's interval.
+static BINK_COUNTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+fn epoch_us() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64 + 1
+}
+
+/// The title called into `Bink2Scarlett.dll` (`victory_hle`'s stand-in,
+/// before the call goes on to the DLL unchanged).
+pub fn bink_called(call: Bink) {
+    match call {
+        Bink::Open => {
+            let open = BINK_OPEN.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::info!(open, "the title opened a Bink video");
+        }
+        Bink::Close => {
+            let open = BINK_OPEN.fetch_sub(1, Ordering::Relaxed) - 1;
+            tracing::info!(open, "the title closed a Bink video");
+            if open <= 0 {
+                // Over at once, not 150 ms later.
+                BINK_LAST.store(0, Ordering::Relaxed);
+            }
+        }
+        Bink::Decode => {
+            BINK_COUNTS[0].fetch_add(1, Ordering::Relaxed);
+            BINK_LAST.store(epoch_us(), Ordering::Relaxed);
+        }
+        Bink::Next => {
+            BINK_COUNTS[1].fetch_add(1, Ordering::Relaxed);
+            BINK_LAST.store(epoch_us(), Ordering::Relaxed);
+        }
+    }
+}
+
+/// Whether the title plays a video now ([`VIDEO_HOLD`]).
+fn video_playing() -> bool {
+    let last = BINK_LAST.load(Ordering::Relaxed);
+    last != 0 && epoch_us().saturating_sub(last) < VIDEO_HOLD.as_micros() as u64
+}
+
+/// Told when the clock goes to the video's interval (true) and back (false):
+/// the loader gives the title's own frame time back to its data meanwhile.
+static ON_VIDEO: std::sync::OnceLock<Box<dyn Fn(bool) + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Sets what is told when the clock goes to the video's interval and back.
+pub fn on_video(f: Box<dyn Fn(bool) + Send + Sync>) {
+    let _ = ON_VIDEO.set(f);
+}
+
+/// Microseconds the clock spent at the video's interval and at the other,
+/// and when it last changed (`epoch_us`); whether it is at the video's now.
+static IN_STATE: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static STATE_SINCE: AtomicU64 = AtomicU64::new(0);
+static AT_VIDEO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The interval the clock should tick at now: `base`, or the video's while one plays.
+fn wanted_interval(base: Duration, playing: bool) -> Duration {
+    match (asked(), video_interval()) {
+        (Some(a), Some(v)) if a < v && base == a && playing => v,
+        _ => base,
+    }
+}
+
+/// Starts the clock anew at `interval` from now, after the last tick handed out.
+fn rebase(c: &mut Clock, interval: Duration) {
+    c.first = LAST.iter().map(|t| t.load(Ordering::Relaxed)).max().unwrap_or(0);
+    c.start = Instant::now();
+    c.interval = interval;
+}
+
+/// Goes to the video's interval or back if that changed: said in the log,
+/// the time in each counted, and the loader told ([`on_video`]).
+fn follow_video(c: &mut Clock) {
+    let want = wanted_interval(c.base, video_playing());
+    if want == c.interval {
+        return;
+    }
+    let video = want != c.base;
+    rebase(c, want);
+    // (An interval set anew by the title while a video plays changes nothing here.)
+    if AT_VIDEO.load(Ordering::Relaxed) == video {
+        return;
+    }
+    let now = epoch_us();
+    let since = now.saturating_sub(STATE_SINCE.swap(now, Ordering::Relaxed));
+    // The time since the last change was in the other state ([0]: the video's, [1]: ours).
+    IN_STATE[usize::from(video)].fetch_add(since, Ordering::Relaxed);
+    AT_VIDEO.store(video, Ordering::Relaxed);
+    let ms = want.as_secs_f64() * 1e3;
+    if video {
+        tracing::info!("frame interval: a video is playing, the title's own {ms:.1} ms (VICTORY_FRAME_INTERVAL_VIDEO)");
+    } else {
+        let [at_video, at_ours] = [0, 1].map(|i| IN_STATE[i].load(Ordering::Relaxed) as f64 / 1e6);
+        let [decodes, nexts] = [0, 1].map(|i| BINK_COUNTS[i].load(Ordering::Relaxed));
+        tracing::info!(
+            seconds_at_video = format_args!("{at_video:.1}"),
+            seconds_at_ours = format_args!("{at_ours:.1}"),
+            decodes,
+            nexts,
+            "frame interval: the video ended, {ms:.1} ms again (VICTORY_FRAME_INTERVAL_VIDEO)"
+        );
+    }
+    if let Some(f) = ON_VIDEO.get() {
+        f(video);
+    }
 }
 
 static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
@@ -93,6 +278,7 @@ pub(crate) extern "system" fn set_interval(
         start: Instant::now(),
         interval,
         first,
+        base: interval,
     });
     S_OK
 }
@@ -136,7 +322,10 @@ fn next_tick(kind: u32) -> (u64, Duration) {
         start: Instant::now(),
         interval: asked().unwrap_or(SIXTIETH),
         first: 0,
+        base: asked().unwrap_or(SIXTIETH),
     });
+    // The video's interval while the title plays one (`VICTORY_FRAME_INTERVAL_VIDEO`).
+    follow_video(c);
     if c.interval.is_zero() {
         // No wait: every wait ends at once, on a tick of its own.
         let tick = last(kind).load(Ordering::Relaxed) + 1;

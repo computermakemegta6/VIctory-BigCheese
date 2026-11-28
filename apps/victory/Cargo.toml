@@ -11,6 +11,7 @@ publish.workspace = true
 victory-core.workspace = true
 victory-pe.workspace = true
 victory-loader.workspace = true
+victory-gpu.workspace = true
 victory-hle.workspace = true
 victory-shader = { workspace = true, features = ["host"] }
 victory-game.workspace = true
