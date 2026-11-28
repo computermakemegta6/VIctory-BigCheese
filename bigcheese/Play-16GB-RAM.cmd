@@ -158,8 +158,18 @@ rem its own while it loads, from textures it picks by index: one not yet on the
 rem card is baked as nothing, for the whole run (black skin). victory-amd gives
 rem the uploads before a bake 250 ms and 12 ms a frame; cool_fox measured that
 rem 40 and 10000 baked faces whole with no slower frames (draw.rs early_budgets).
-if not defined VICTORY_EARLY_TEXTURES_MS set "VICTORY_EARLY_TEXTURES_MS=40"
+if not defined VICTORY_EARLY_TEXTURES_MS set "VICTORY_EARLY_TEXTURES_MS=12"
 if not defined VICTORY_BAKE_TEXTURES_MS set "VICTORY_BAKE_TEXTURES_MS=10000"
+rem Smooth turning (look-around frame drops): the early budget above is spent in
+rem EVERY frame, and the texture pass another 20 ms (40 in catch-up) on a thread
+rem that records the frame, so turning into a new view cost up to ~80 ms a frame.
+rem The bake budget (10000 ms just before a skin bake) still keeps skin whole.
+rem Textures fill in over a few more frames instead (RAZDA4A-XEN measured 4 ms and
+rem no catch-up: texture-pass spikes 821 -> 34 ms). New effects' compute programs
+rem wait at most 50 ms a frame (the face bake keeps 5 s).
+if not defined VICTORY_TEXTURE_STAGE_MS set "VICTORY_TEXTURE_STAGE_MS=6"
+if not defined VICTORY_TEXTURE_CATCHUP set "VICTORY_TEXTURE_CATCHUP=0"
+if not defined VICTORY_COMPUTE_LATE_WAIT_MS set "VICTORY_COMPUTE_LATE_WAIT_MS=50"
 
 rem AMD FidelityFX SDK DLLs (FSR 4 on an RX 9000 card), from the fsr (or
 rem fidelityfx-sdk) folder next to this file. The installer's "BEST" launcher also sets
