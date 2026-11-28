@@ -43,6 +43,10 @@ pub(crate) struct Pending {
     used: AtomicBool,
     /// A pass over the screen ([`GraphicsState::screen_pass`]).
     screen: bool,
+    /// A compute pipeline (never graphics): once-only compute passes such as
+    /// the character head blend-shape map (`61e54e90adccaf6a`) lose their
+    /// output for the rest of the run if dropped on first use ([`compute_budget`]).
+    compute: bool,
     /// Why it is never made ([`left_out`]), if it is not.
     left_out: Option<&'static str>,
 }
@@ -95,6 +99,7 @@ impl Pending {
         Pending {
             left_out,
             screen: graphics.as_ref().is_some_and(|g| g.screen_pass()),
+            compute: graphics.is_none() && !shaders.is_empty(),
             shaders,
             graphics,
             queue_state: AtomicU8::new(NOT_QUEUED),
@@ -428,9 +433,40 @@ fn screen_budget() -> Duration {
     })
 }
 
-/// Whether passes over the screen go before the others.
-fn screens_first() -> bool {
-    !screen_budget().is_zero()
+/// As [`screen_budget`], for compute pipelines (`VICTORY_COMPUTE_WAIT_MS`,
+/// 5 s; 0: like the others). A compute pass dropped on its first use is
+/// gone for good when the title runs it once: the character head
+/// blend-shape map (`61e54e90adccaf6a`) dropped on the first world frame,
+/// when graphics pipelines had used up the frame's shared half second,
+/// left faces missing or black for the run. (RAZDA4A-XEN 453597e.)
+fn compute_budget() -> Duration {
+    static BUDGET: OnceLock<Duration> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let millis = std::env::var("VICTORY_COMPUTE_WAIT_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(5_000);
+        Duration::from_millis(millis)
+    })
+}
+
+/// What a frame may wait for compute pipelines that are not critical
+/// ([`critical_compute`]), over all threads (`VICTORY_COMPUTE_LATE_WAIT_MS`,
+/// 400 ms; 0: the whole [`compute_budget`]): a new effect's compute
+/// program met mid-drive is made in the background, not waited for for
+/// seconds. (RAZDA4A-XEN 4e6f7ed.)
+fn compute_late_budget() -> Duration {
+    static BUDGET: OnceLock<Duration> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let millis = std::env::var("VICTORY_COMPUTE_LATE_WAIT_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(400);
+        Duration::from_millis(millis)
+    })
+}
+
+/// The head blend-shape map's compute program, run once per character.
+const HEAD_BLEND_SHAPES: &str = "61e54e90adccaf6a";
+
+/// Whether a compute pipeline keeps the whole [`compute_budget`] for itself:
+/// in the title's first frames, and the head blend-shape map always.
+fn critical_compute(p: &Pending, frame: u64) -> bool {
+    frame < 180 || p.shaders.iter().any(|s| s.hash == HEAD_BLEND_SHAPES)
 }
 
 /// Pipelines queued and not made yet.
@@ -511,16 +547,28 @@ fn shared_budget() -> bool {
 
 /// Waits for `p` while frame `frame` has budget left.
 fn wait(p: &Pending, frame: u64) {
-    let screen = p.screen && screens_first();
-    let budget = if screen { screen_budget() } else { wait_budget() };
+    let compute = p.compute && !compute_budget().is_zero();
+    let screen = !compute && p.screen && !screen_budget().is_zero();
+    let (bucket, budget, shared) = if compute && critical_compute(p, frame) {
+        // Not shared: two recording threads meeting different once-only
+        // compute pipelines in the first world frame each wait for their own.
+        (2usize, compute_budget(), false)
+    } else if compute {
+        let late = compute_late_budget();
+        let budget = if late.is_zero() { compute_budget() } else { compute_budget().min(late) };
+        (2usize, budget, shared_budget())
+    } else if screen {
+        (1usize, screen_budget(), shared_budget())
+    } else {
+        (0usize, wait_budget(), shared_budget())
+    };
     if budget.is_zero() {
         return;
     }
     // The frame the budget belongs to, and what was waited of it (or is
-    // taken by a thread waiting now); of the passes over the screen too.
-    static SPENT: [Mutex<(u64, Duration)>; 2] = [const { Mutex::new((u64::MAX, Duration::ZERO)) }; 2];
-    let spent_of = &SPENT[usize::from(screen)];
-    let shared = shared_budget();
+    // taken by a thread waiting now): 0 graphics, 1 screen passes, 2 compute.
+    static SPENT: [Mutex<(u64, Duration)>; 3] = [const { Mutex::new((u64::MAX, Duration::ZERO)) }; 3];
+    let spent_of = &SPENT[bucket];
     let left = {
         let mut spent = spent_of.lock().unwrap_or_else(|e| e.into_inner());
         if spent.0 != frame {
@@ -555,6 +603,14 @@ fn wait(p: &Pending, frame: u64) {
             made = p.made.get().is_some(),
             shaders = ?p.shaders,
             "a pass over the screen was waited for (VICTORY_SCREEN_WAIT_MS=0: dropped past half a second a frame)"
+        );
+    } else if compute && waited > Duration::from_millis(50) {
+        tracing::info!(
+            ms = waited.as_millis() as u64,
+            made = p.made.get().is_some(),
+            critical = critical_compute(p, frame),
+            shaders = ?p.shaders,
+            "a compute dispatch waited for its host pipeline (VICTORY_COMPUTE_WAIT_MS=0: off)"
         );
     }
     {
@@ -634,7 +690,9 @@ impl Queue {
             return None;
         }
         p.queue_state.store(priority, Ordering::Relaxed);
-        if priority == REQUESTED && p.screen && screens_first() {
+        if priority == REQUESTED
+            && ((p.screen && !screen_budget().is_zero()) || (p.compute && !compute_budget().is_zero()))
+        {
             self.screen.push_back(p.clone());
         } else if priority == REQUESTED {
             self.requested.push_back(p.clone());
@@ -729,7 +787,8 @@ fn workers() -> bool {
             std::thread::available_parallelism().map_or(2, |n| n.get()),
         );
         tracing::info!(workers, "pipeline workers");
-        let screens = if screens_first() { SCREEN_WORKERS } else { 0 };
+        // Workers of their own for passes over the screen and compute pipelines.
+        let screens = if !screen_budget().is_zero() || !compute_budget().is_zero() { SCREEN_WORKERS } else { 0 };
         guard_start();
         for i in 0..workers + screens {
             if spawn_worker(i >= workers) {
