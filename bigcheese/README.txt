@@ -32,6 +32,10 @@ Which launcher?
                      budgets, the card window line at 80%.
   Play-No-FG.cmd     Play-16GB-RAM.cmd with frame generation off, for a
                      game that crashes at the start or a card it fails on.
+  Play-16GB-RAM-RayTracing.cmd
+                     Play-16GB-RAM.cmd with the game's own ray tracing on
+                     (reflections, shadows, indoor light). Busy streets run at
+                     about half the frame rate.
 With 32 GB of RAM or more, try both in the same place and keep the faster one
 (F3 shows the frame rate). Both share the game folder, shader cache and saves,
 and both have FSR 4, frame generation, the 60 fps menus and the crash fix.
