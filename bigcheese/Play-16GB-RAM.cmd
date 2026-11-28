@@ -98,6 +98,13 @@ rem How full the card's memory may get, in percent, before those buffers go into
 rem the PC's memory (default 80). At 80 the open world fell to about 10 real fps
 rem as Windows paged; at 90 it held 17. Lower it if the card runs out.
 if not defined VICTORY_WINDOW_CARD_PERCENT set "VICTORY_WINDOW_CARD_PERCENT=90"
+rem Less of the PC's memory (RAZDA4A-XEN settings; 16 GB RAM filled to 14.8 GB):
+rem when free RAM falls under 3 GB, texture prefetch is held to 64 MB a frame
+rem and idle upload/scratch memory is given back; copies of game memory kept
+rem in the PC are capped at 96 MB (768 before); 24 spare snapshot buffers.
+if not defined VICTORY_RESIDENCY set "VICTORY_RESIDENCY=1"
+if not defined VICTORY_WINDOW_BUDGET_MB set "VICTORY_WINDOW_BUDGET_MB=96"
+if not defined VICTORY_SNAPSHOT_POOL set "VICTORY_SNAPSHOT_POOL=24"
 
 rem --- victory-amd's installer settings (eikkapine) ---
 if not defined VICTORY_LOG set "VICTORY_LOG=info"
